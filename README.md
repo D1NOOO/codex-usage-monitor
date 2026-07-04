@@ -171,7 +171,6 @@ Important fields:
 | `Language` | `auto`, `zh-CN`, `zh-TW`, `en` |
 | `Position` | `bottom-left`, `top` |
 | `UsageDisplay` | `remaining` (default), `used` |
-| `PercentDecimalPlaces` | `0` (default), `1` |
 | `RefreshSeconds` | 30–900 |
 | `Style.Scale` | 0.75–1.50 |
 | `Style.Opacity` | 0.50–1.00 |

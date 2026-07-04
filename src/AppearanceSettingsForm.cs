@@ -24,8 +24,6 @@ namespace CodexRateMonitorNative
         private readonly RadioButton topPosition;
         private readonly RadioButton showRemaining;
         private readonly RadioButton showUsed;
-        private readonly RadioButton wholePercent;
-        private readonly RadioButton oneDecimal;
         private readonly ComboBox language;
         private readonly ComboBox fontFamily;
         private readonly NumericUpDown fontSize;
@@ -106,18 +104,6 @@ namespace CodexRateMonitorNative
             showUsed.Margin = new Padding(0, 3, 0, 0);
             showUsed.CheckedChanged += ControlChanged;
 
-            wholePercent = new RadioButton();
-            wholePercent.Text = I18n.T("WholePercent");
-            wholePercent.AutoSize = true;
-            wholePercent.Margin = new Padding(6, 3, 12, 0);
-            wholePercent.CheckedChanged += ControlChanged;
-
-            oneDecimal = new RadioButton();
-            oneDecimal.Text = I18n.T("OneDecimal");
-            oneDecimal.AutoSize = true;
-            oneDecimal.Margin = new Padding(0, 3, 0, 0);
-            oneDecimal.CheckedChanged += ControlChanged;
-
             language = new ComboBox();
             language.DropDownStyle = ComboBoxStyle.DropDownList;
             language.Width = 142;
@@ -177,19 +163,6 @@ namespace CodexRateMonitorNative
             progressFlow.Controls.Add(showRemaining);
             progressFlow.Controls.Add(showUsed);
             displayLayout.Controls.Add(progressFlow, 1, 1);
-
-            var precisionLabel = new Label();
-            precisionLabel.Text = I18n.T("PercentagePrecision");
-            precisionLabel.AutoSize = true;
-            precisionLabel.Margin = new Padding(4, 6, 0, 0);
-
-            var precisionFlow = new FlowLayoutPanel();
-            precisionFlow.Dock = DockStyle.Fill;
-            precisionFlow.WrapContents = false;
-            precisionFlow.Controls.Add(precisionLabel);
-            precisionFlow.Controls.Add(wholePercent);
-            precisionFlow.Controls.Add(oneDecimal);
-            displayLayout.Controls.Add(precisionFlow, 2, 1);
 
             positionGroup.Controls.Add(displayLayout);
             root.Controls.Add(positionGroup, 0, 2);
@@ -518,8 +491,6 @@ namespace CodexRateMonitorNative
                 topPosition.Checked = working.Position == "top";
                 showRemaining.Checked = UsageDisplayTools.IsRemaining(working.UsageDisplay);
                 showUsed.Checked = !UsageDisplayTools.IsRemaining(working.UsageDisplay);
-                wholePercent.Checked = working.PercentDecimalPlaces == 0;
-                oneDecimal.Checked = working.PercentDecimalPlaces == 1;
                 string languageCode = I18n.NormalizeSetting(working.Language);
                 for (int i = 0; i < language.Items.Count; i++)
                 {
@@ -564,7 +535,6 @@ namespace CodexRateMonitorNative
         {
             working.Position = bottomPosition.Checked ? "bottom-left" : "top";
             working.UsageDisplay = showUsed.Checked ? "used" : "remaining";
-            working.PercentDecimalPlaces = oneDecimal.Checked ? 1 : 0;
             var selectedLanguage = language.SelectedItem as LanguageOption;
             working.Language = selectedLanguage == null ? "auto" : selectedLanguage.Code;
             working.Style.FontFamily = string.IsNullOrWhiteSpace(fontFamily.Text)
@@ -812,8 +782,7 @@ namespace CodexRateMonitorNative
 
             double value = UsageDisplayTools.GetDisplayedPercent(
                 usedPercent, settings.UsageDisplay);
-            string percent = UsageDisplayTools.FormatPercent(
-                value, settings.PercentDecimalPlaces);
+            string percent = UsageDisplayTools.FormatPercent(value);
             float mainSize = (float)style.FontSize;
             float resetSize = (float)style.ResetFontSize;
             using (family)

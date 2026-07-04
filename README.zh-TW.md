@@ -18,7 +18,6 @@
 ## 功能
 
 - 預設顯示 5 小時與 7 天視窗的剩餘百分比，也可切換為顯示已用。
-- 百分比可選擇顯示整數或保留 1 位小數。
 - 進度列長度及警告／危險顏色會隨顯示模式同步變化。
 - 支援左下角頭像右側、頂部標題列兩種位置。
 - 原生 GUI EXE，沒有 CMD、Node 或 PowerShell 包裝視窗。
@@ -130,7 +129,6 @@ Release 中的 `settings.json` 來自隱私安全的
 | `Language` | `auto`、`zh-CN`、`zh-TW`、`en` |
 | `Position` | `bottom-left`、`top` |
 | `UsageDisplay` | `remaining`（預設）、`used` |
-| `PercentDecimalPlaces` | `0`（預設）、`1` |
 | `RefreshSeconds` | 30–900 |
 | `Style.Scale` | 0.75–1.50 |
 | `Style.Opacity` | 0.50–1.00 |
