@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vMAJOR.MINOR.PATCH tag to release
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Resolve and verify version
+        id: version
+        shell: pwsh
+        run: |
+          $tag = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.tag }}' } else { '${{ github.ref_name }}' }
+          if ($tag -notmatch '^v(\d+\.\d+\.\d+)$') { throw "Tag must be vMAJOR.MINOR.PATCH; received '$tag'." }
+          $version = $Matches[1]
+          $declared = (Get-Content -Raw version.txt).Trim()
+          if ($version -ne $declared) { throw "Tag $tag does not match version.txt ($declared)." }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Build release package
+        shell: pwsh
+        run: |
+          ./scripts/verify.ps1
+          ./scripts/build.ps1 -Version '${{ steps.version.outputs.version }}' -Package
+
+      - name: Attest release archive
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: artifacts/CodexRateMonitor-${{ steps.version.outputs.version }}-windows-x64.zip
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create '${{ steps.version.outputs.tag }}' `
+            'artifacts/CodexRateMonitor-${{ steps.version.outputs.version }}-windows-x64.zip' `
+            'artifacts/SHA256SUMS.txt' `
+            --verify-tag `
+            --generate-notes `
+            --title 'Codex Rate Monitor ${{ steps.version.outputs.tag }}'
