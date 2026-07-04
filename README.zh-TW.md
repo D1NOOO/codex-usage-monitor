@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Codex 用量監視器專案圖示" width="180">
+</p>
+
 # Codex 用量監視器（Windows）
 
 [简体中文](README.zh-CN.md) · **繁體中文** · [English](README.md)

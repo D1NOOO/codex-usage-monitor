@@ -47,6 +47,7 @@ namespace CodexRateMonitorNative
 
         private readonly OverlayForm overlay;
         private readonly NotifyIcon trayIcon;
+        private readonly Icon applicationIcon;
         private readonly System.Windows.Forms.Timer timer;
         private readonly AppServerClient appServer;
         private ToolStripMenuItem startupItem;
@@ -67,8 +68,9 @@ namespace CodexRateMonitorNative
             appServer.SnapshotReceived += OnSnapshotReceived;
             appServer.StatusChanged += OnStatusChanged;
 
+            applicationIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             trayIcon = new NotifyIcon();
-            trayIcon.Icon = SystemIcons.Information;
+            trayIcon.Icon = applicationIcon ?? SystemIcons.Application;
             trayIcon.Text = I18n.T("AppTitle");
             trayMenu = BuildTrayMenu();
             trayIcon.ContextMenuStrip = trayMenu;
@@ -314,6 +316,8 @@ namespace CodexRateMonitorNative
             timer.Dispose();
             trayIcon.Visible = false;
             trayIcon.Dispose();
+            if (applicationIcon != null)
+                applicationIcon.Dispose();
             if (appearanceForm != null && !appearanceForm.IsDisposed)
                 appearanceForm.Close();
             appServer.Dispose();

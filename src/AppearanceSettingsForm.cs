@@ -42,7 +42,7 @@ namespace CodexRateMonitorNative
             onCancel = cancelCallback;
 
             Text = I18n.T("SettingsTitle");
-            Icon = SystemIcons.Information;
+            Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application;
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;

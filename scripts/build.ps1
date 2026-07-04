@@ -85,6 +85,8 @@ if ($LASTEXITCODE -ne 0) {
 
 Copy-Item -LiteralPath (Join-Path $repoRoot 'config\settings.default.json') -Destination (Join-Path $outputPath 'settings.json')
 Copy-Item -LiteralPath (Join-Path $repoRoot 'style-examples') -Destination (Join-Path $outputPath 'style-examples') -Recurse
+New-Item -ItemType Directory -Path (Join-Path $outputPath 'assets') -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $repoRoot 'assets\logo.png') -Destination (Join-Path $outputPath 'assets\logo.png')
 foreach ($readme in @('README.md', 'README.zh-CN.md', 'README.zh-TW.md')) {
     Copy-Item -LiteralPath (Join-Path $repoRoot $readme) -Destination (Join-Path $outputPath $readme)
 }

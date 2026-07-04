@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Codex Rate Monitor logo" width="180">
+</p>
+
 # Codex Rate Monitor for Windows
 
 [简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · **English**
