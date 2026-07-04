@@ -726,13 +726,18 @@ namespace CodexRateMonitorNative
             float resetSize = (float)style.ResetFontSize;
             using (family)
             using (var main = new Font(family, mainSize, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (var percentFont = new Font(
+                family,
+                mainSize + DrawingHelpers.PercentOpticalSizeOffset,
+                FontStyle.Bold,
+                GraphicsUnit.Pixel))
             using (var resetFont = new Font(family, resetSize, FontStyle.Regular, GraphicsUnit.Pixel))
             using (var textBrush = new SolidBrush(ColorTools.Parse(style.Text)))
             using (var mutedBrush = new SolidBrush(ColorTools.Parse(style.MutedText)))
             {
                 DrawingHelpers.DrawUsageText(
                     g, bounds, label, percent, reset,
-                    main, main, resetFont, textBrush, mutedBrush);
+                    main, percentFont, resetFont, textBrush, mutedBrush);
             }
 
             RectangleF track = new RectangleF(bounds.X + 7, bounds.Bottom - 4, bounds.Width - 14, 2);

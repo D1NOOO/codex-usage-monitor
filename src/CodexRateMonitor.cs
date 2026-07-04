@@ -520,7 +520,11 @@ namespace CodexRateMonitorNative
             float resetFontSize = (float)settings.Style.ResetFontSize;
             using (family)
             using (var labelFont = new Font(family, mainFontSize, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (var percentFont = new Font(family, mainFontSize, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (var percentFont = new Font(
+                family,
+                mainFontSize + DrawingHelpers.PercentOpticalSizeOffset,
+                FontStyle.Bold,
+                GraphicsUnit.Pixel))
             using (var resetFont = new Font(family, resetFontSize, FontStyle.Regular, GraphicsUnit.Pixel))
             using (var textBrush = new SolidBrush(text))
             using (var mutedBrush = new SolidBrush(muted))
@@ -1225,6 +1229,9 @@ namespace CodexRateMonitorNative
 
     internal static class DrawingHelpers
     {
+        // Latin digits and '%' render optically smaller than CJK glyphs in common UI fonts.
+        public const float PercentOpticalSizeOffset = 1f;
+
         public static void DrawUsageText(
             Graphics graphics,
             RectangleF bounds,
@@ -1247,10 +1254,13 @@ namespace CodexRateMonitorNative
                 textFormat.FormatFlags |= StringFormatFlags.NoWrap |
                                           StringFormatFlags.MeasureTrailingSpaces;
 
-                float baseline = bounds.Bottom - 8f;
-                float labelTop = baseline - GetCellAscent(labelFont);
-                float percentTop = baseline - GetCellAscent(percentFont);
-                float resetTop = baseline - GetCellAscent(resetFont);
+                // Reserve the bottom strip for the progress bar, then center every
+                // font cell on the same horizontal line. Optical size differences
+                // therefore grow equally upward and downward.
+                float centerLine = bounds.Top + (bounds.Height - 4f) / 2f;
+                float labelTop = centerLine - GetCellHeight(labelFont) / 2f;
+                float percentTop = centerLine - GetCellHeight(percentFont) / 2f;
+                float resetTop = centerLine - GetCellHeight(resetFont) / 2f;
 
                 float labelX = bounds.Left + leftPadding;
                 float labelWidth = MeasureTextWidth(graphics, label, labelFont, textFormat);
@@ -1291,13 +1301,6 @@ namespace CodexRateMonitorNative
         {
             return (float)Math.Ceiling(
                 graphics.MeasureString(text, font, 1000, format).Width);
-        }
-
-        private static float GetCellAscent(Font font)
-        {
-            FontFamily family = font.FontFamily;
-            int emHeight = family.GetEmHeight(font.Style);
-            return font.Size * family.GetCellAscent(font.Style) / emHeight;
         }
 
         private static float GetCellHeight(Font font)
