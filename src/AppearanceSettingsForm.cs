@@ -67,7 +67,8 @@ namespace CodexRateMonitorNative
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 104));
+            // Give the two display-option rows enough baseline separation at 100–125% DPI.
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 124));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 184));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 180));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
