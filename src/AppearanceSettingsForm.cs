@@ -124,12 +124,32 @@ namespace CodexRateMonitorNative
             {
                 using (var fonts = new InstalledFontCollection())
                 {
-                    object[] names = fonts.Families
-                        .Select(delegate(FontFamily family) { return family.Name; })
-                        .OrderBy(delegate(string name) { return name; })
-                        .Cast<object>()
-                        .ToArray();
-                    fontFamily.Items.AddRange(names);
+                    var installed = new HashSet<string>(
+                        fonts.Families.Select(delegate(FontFamily family) { return family.Name; }),
+                        StringComparer.OrdinalIgnoreCase);
+                    string[] preferred =
+                    {
+                        "Microsoft YaHei UI",
+                        "Microsoft JhengHei UI",
+                        "Segoe UI",
+                        "Arial",
+                        "Calibri",
+                        "Consolas",
+                        "Times New Roman",
+                        "SimSun"
+                    };
+                    var added = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (string name in preferred)
+                    {
+                        if (installed.Contains(name) && added.Add(name))
+                            fontFamily.Items.Add(name);
+                    }
+                    if (!string.IsNullOrWhiteSpace(working.Style.FontFamily) &&
+                        installed.Contains(working.Style.FontFamily) &&
+                        added.Add(working.Style.FontFamily))
+                        fontFamily.Items.Add(working.Style.FontFamily);
+                    if (fontFamily.Items.Count == 0)
+                        fontFamily.Items.Add(SystemFonts.MessageBoxFont.FontFamily.Name);
                 }
             }
             catch
@@ -710,17 +730,9 @@ namespace CodexRateMonitorNative
             using (var textBrush = new SolidBrush(ColorTools.Parse(style.Text)))
             using (var mutedBrush = new SolidBrush(ColorTools.Parse(style.MutedText)))
             {
-                float textY = bounds.Y + Math.Max(3f, (bounds.Height - mainSize - 5f) / 2f);
-                g.DrawString(label, main, textBrush, bounds.X + 7, textY);
-                g.DrawString(percent, main, textBrush, bounds.X + 48, textY);
-                using (var format = new StringFormat())
-                {
-                    format.Alignment = StringAlignment.Far;
-                    format.LineAlignment = StringAlignment.Center;
-                    g.DrawString(reset, resetFont, mutedBrush,
-                        new RectangleF(bounds.X + 82, bounds.Y + 1, bounds.Width - 88, bounds.Height - 5),
-                        format);
-                }
+                DrawingHelpers.DrawUsageText(
+                    g, bounds, label, percent, reset,
+                    main, main, resetFont, textBrush, mutedBrush);
             }
 
             RectangleF track = new RectangleF(bounds.X + 7, bounds.Bottom - 4, bounds.Width - 14, 2);

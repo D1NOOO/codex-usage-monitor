@@ -525,15 +525,9 @@ namespace CodexRateMonitorNative
             using (var textBrush = new SolidBrush(text))
             using (var mutedBrush = new SolidBrush(muted))
             {
-                float textY = bounds.Y + Math.Max(3f, (bounds.Height - mainFontSize - 5f) / 2f);
-                g.DrawString(label, labelFont, textBrush, bounds.X + 7, textY);
-                g.DrawString(percent, percentFont, textBrush, bounds.X + 48, textY);
-                var format = new StringFormat();
-                format.Alignment = StringAlignment.Far;
-                format.LineAlignment = StringAlignment.Center;
-                g.DrawString(reset, resetFont, mutedBrush,
-                    new RectangleF(bounds.X + 82, bounds.Y + 1, bounds.Width - 88, bounds.Height - 5), format);
-                format.Dispose();
+                DrawingHelpers.DrawUsageText(
+                    g, bounds, label, percent, reset,
+                    labelFont, percentFont, resetFont, textBrush, mutedBrush);
             }
 
             float value = usage == null
@@ -1231,6 +1225,90 @@ namespace CodexRateMonitorNative
 
     internal static class DrawingHelpers
     {
+        public static void DrawUsageText(
+            Graphics graphics,
+            RectangleF bounds,
+            string label,
+            string percent,
+            string reset,
+            Font labelFont,
+            Font percentFont,
+            Font resetFont,
+            Brush textBrush,
+            Brush mutedBrush)
+        {
+            const float leftPadding = 7f;
+            const float labelGap = 4f;
+            const float timeGap = 7f;
+            const float rightPadding = 7f;
+
+            using (StringFormat textFormat = (StringFormat)StringFormat.GenericTypographic.Clone())
+            {
+                textFormat.FormatFlags |= StringFormatFlags.NoWrap |
+                                          StringFormatFlags.MeasureTrailingSpaces;
+
+                float baseline = bounds.Bottom - 8f;
+                float labelTop = baseline - GetCellAscent(labelFont);
+                float percentTop = baseline - GetCellAscent(percentFont);
+                float resetTop = baseline - GetCellAscent(resetFont);
+
+                float labelX = bounds.Left + leftPadding;
+                float labelWidth = MeasureTextWidth(graphics, label, labelFont, textFormat);
+                float percentX = labelX + labelWidth + labelGap;
+                float percentWidth = MeasureTextWidth(graphics, percent, percentFont, textFormat);
+
+                graphics.DrawString(label, labelFont, textBrush,
+                    new PointF(labelX, labelTop), textFormat);
+                graphics.DrawString(percent, percentFont, textBrush,
+                    new PointF(percentX, percentTop), textFormat);
+
+                float timeLeft = percentX + percentWidth + timeGap;
+                float timeRight = bounds.Right - rightPadding;
+                if (timeRight > timeLeft)
+                {
+                    using (StringFormat timeFormat = (StringFormat)textFormat.Clone())
+                    {
+                        timeFormat.Alignment = StringAlignment.Far;
+                        timeFormat.Trimming = StringTrimming.EllipsisCharacter;
+                        float resetHeight = GetCellHeight(resetFont) + 2f;
+                        graphics.DrawString(reset, resetFont, mutedBrush,
+                            new RectangleF(
+                                timeLeft,
+                                resetTop,
+                                timeRight - timeLeft,
+                                resetHeight),
+                            timeFormat);
+                    }
+                }
+            }
+        }
+
+        private static float MeasureTextWidth(
+            Graphics graphics,
+            string text,
+            Font font,
+            StringFormat format)
+        {
+            return (float)Math.Ceiling(
+                graphics.MeasureString(text, font, 1000, format).Width);
+        }
+
+        private static float GetCellAscent(Font font)
+        {
+            FontFamily family = font.FontFamily;
+            int emHeight = family.GetEmHeight(font.Style);
+            return font.Size * family.GetCellAscent(font.Style) / emHeight;
+        }
+
+        private static float GetCellHeight(Font font)
+        {
+            FontFamily family = font.FontFamily;
+            int emHeight = family.GetEmHeight(font.Style);
+            int cellHeight = family.GetCellAscent(font.Style) +
+                             family.GetCellDescent(font.Style);
+            return font.Size * cellHeight / emHeight;
+        }
+
         public static GraphicsPath RoundRect(RectangleF bounds, float radius)
         {
             var path = new GraphicsPath();
