@@ -381,8 +381,12 @@ namespace CodexRateMonitorNative
         {
             settings = value;
             Opacity = settings.Style.Opacity;
-            int width = (int)Math.Round((settings.Position == "bottom-left" ? 184 : 470) * settings.Style.Scale);
-            int height = (int)Math.Round((settings.Position == "bottom-left" ? 62 : 40) * settings.Style.Scale);
+            int width = (int)Math.Round(
+                (settings.Position == "bottom-left" ? DrawingHelpers.BottomLeftWidth : 470) *
+                settings.Style.Scale);
+            int height = (int)Math.Round(
+                (settings.Position == "bottom-left" ? DrawingHelpers.BottomLeftHeight : 40) *
+                settings.Style.Scale);
             Size = new Size(width, height);
             UpdateRegion();
             Invalidate();
@@ -489,8 +493,10 @@ namespace CodexRateMonitorNative
 
             if (settings.Position == "bottom-left")
             {
-                DrawCard(g, new RectangleF(3, 3, 178, 27), true, card, text, muted, track);
-                DrawCard(g, new RectangleF(3, 32, 178, 27), false, card, text, muted, track);
+                DrawCard(g, DrawingHelpers.GetBottomLeftCardBounds(true),
+                    true, card, text, muted, track);
+                DrawCard(g, DrawingHelpers.GetBottomLeftCardBounds(false),
+                    false, card, text, muted, track);
             }
             else
             {
@@ -1309,8 +1315,17 @@ namespace CodexRateMonitorNative
 
     internal static class DrawingHelpers
     {
+        public const int BottomLeftWidth = 184;
+        public const int BottomLeftHeight = 66;
+
         // Latin digits and '%' render optically smaller than CJK glyphs in common UI fonts.
         public const float PercentOpticalSizeOffset = 1f;
+
+        public static RectangleF GetBottomLeftCardBounds(bool primary)
+        {
+            // Six pixels between rows keeps the cards visually separate at 100–125% DPI.
+            return new RectangleF(3, primary ? 3 : 36, 178, 27);
+        }
 
         public static void DrawUsageText(
             Graphics graphics,

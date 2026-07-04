@@ -728,8 +728,12 @@ namespace CodexRateMonitorNative
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
 
-            int baseWidth = settings.Position == "bottom-left" ? 184 : 470;
-            int baseHeight = settings.Position == "bottom-left" ? 62 : 40;
+            int baseWidth = settings.Position == "bottom-left"
+                ? DrawingHelpers.BottomLeftWidth
+                : 470;
+            int baseHeight = settings.Position == "bottom-left"
+                ? DrawingHelpers.BottomLeftHeight
+                : 40;
             float fit = Math.Min(
                 (ClientSize.Width - 28f) / baseWidth,
                 (ClientSize.Height - 30f) / baseHeight);
@@ -768,10 +772,10 @@ namespace CodexRateMonitorNative
             DateTime sevenReset = DateTime.Today.AddDays(7).AddHours(22).AddMinutes(25);
             if (settings.Position == "bottom-left")
             {
-                DrawRow(g, new RectangleF(3, 3, 178, 27),
+                DrawRow(g, DrawingHelpers.GetBottomLeftCardBounds(true),
                     I18n.Translate("FiveHour", settings.Language), 35f,
                     FormatReset(fiveReset), card, true);
-                DrawRow(g, new RectangleF(3, 32, 178, 27),
+                DrawRow(g, DrawingHelpers.GetBottomLeftCardBounds(false),
                     I18n.Translate("SevenDay", settings.Language), 5f,
                     FormatReset(sevenReset), card, false);
             }
