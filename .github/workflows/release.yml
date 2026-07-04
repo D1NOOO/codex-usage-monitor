@@ -55,9 +55,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create '${{ steps.version.outputs.tag }}' `
-            'artifacts/CodexRateMonitor-${{ steps.version.outputs.version }}-windows-x64.zip' `
-            'artifacts/SHA256SUMS.txt' `
-            --verify-tag `
-            --generate-notes `
-            --title 'Codex Rate Monitor ${{ steps.version.outputs.tag }}'
+          $tag = '${{ steps.version.outputs.tag }}'
+          $version = '${{ steps.version.outputs.version }}'
+          $notesFile = ".github/release-notes/$tag.md"
+          $arguments = @(
+            'release', 'create', $tag,
+            "artifacts/CodexRateMonitor-$version-windows-x64.zip",
+            'artifacts/SHA256SUMS.txt',
+            '--verify-tag',
+            '--title', "Codex Rate Monitor $tag"
+          )
+          if (Test-Path -LiteralPath $notesFile) {
+            $arguments += @('--notes-file', $notesFile)
+          } else {
+            $arguments += '--generate-notes'
+          }
+          & gh @arguments
+          if ($LASTEXITCODE -ne 0) {
+            throw "GitHub Release creation failed with exit code $LASTEXITCODE."
+          }

@@ -159,9 +159,9 @@ cd codex-usage-monitor
 2. 创建同版本标签：
 
    ```powershell
-   git tag v2.2.0
+   git tag v0.1.0
    git push origin main
-   git push origin v2.2.0
+   git push origin v0.1.0
    ```
 
 3. Release 工作流会自动：

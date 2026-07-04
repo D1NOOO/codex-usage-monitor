@@ -222,9 +222,9 @@ GitHub Actions performs both CI builds and tagged Releases.
 3. Create and push a matching semantic-version tag:
 
    ```powershell
-   git tag v2.2.0
+   git tag v0.1.0
    git push origin main
-   git push origin v2.2.0
+   git push origin v0.1.0
    ```
 
 4. `.github/workflows/release.yml`:
