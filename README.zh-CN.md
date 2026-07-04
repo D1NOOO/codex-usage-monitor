@@ -31,7 +31,8 @@
 
 - Windows 10/11
 - .NET Framework 4.8
-- 已安装 Codex App 和支持以下命令的 Codex CLI：
+- 已安装 Codex App，以及 Codex CLI 0.134.0（已验证）或其他支持以下命令的
+  CLI 版本：
 
   ```powershell
   codex app-server
@@ -81,7 +82,7 @@ flowchart LR
 程序定位 Codex CLI 的原生可执行文件，然后直接启动：
 
 ```text
-codex.exe app-server --stdio
+codex.exe app-server
 ```
 
 初始化完成后发送：

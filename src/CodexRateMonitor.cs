@@ -635,7 +635,7 @@ namespace CodexRateMonitorNative
 
             var startInfo = new ProcessStartInfo();
             startInfo.FileName = executable;
-            startInfo.Arguments = "app-server --stdio";
+            startInfo.Arguments = "app-server";
             startInfo.UseShellExecute = false;
             startInfo.CreateNoWindow = true;
             startInfo.WindowStyle = ProcessWindowStyle.Hidden;

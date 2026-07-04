@@ -31,7 +31,8 @@
 
 - Windows 10/11
 - .NET Framework 4.8
-- 已安裝 Codex App，以及支援下列命令的 Codex CLI：
+- 已安裝 Codex App，以及 Codex CLI 0.134.0（已驗證）或其他支援下列命令的
+  CLI 版本：
 
   ```powershell
   codex app-server
@@ -81,7 +82,7 @@ flowchart LR
 程式會找出 Codex CLI 的原生執行檔，然後直接啟動：
 
 ```text
-codex.exe app-server --stdio
+codex.exe app-server
 ```
 
 初始化完成後傳送：

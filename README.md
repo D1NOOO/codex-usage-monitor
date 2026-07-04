@@ -40,7 +40,8 @@ A small, native Windows tray utility that displays the current Codex
 
 - Windows 10 or Windows 11.
 - .NET Framework 4.8.
-- Codex App and a Codex CLI version that supports:
+- Codex App and Codex CLI 0.134.0 (tested), or another CLI version that
+  supports:
 
   ```powershell
   codex app-server
@@ -106,7 +107,7 @@ flowchart LR
 The monitor locates the native Codex CLI executable and starts:
 
 ```text
-codex.exe app-server --stdio
+codex.exe app-server
 ```
 
 It sends an initialization request, the initialized notification, then:
