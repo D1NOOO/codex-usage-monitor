@@ -1190,7 +1190,7 @@ namespace CodexRateMonitorNative
             Opacity = 0.97;
             CornerRadius = 9;
             FontSize = 14;
-            ResetFontSize = 11;
+            ResetFontSize = 13;
             FontFamily = "Microsoft YaHei UI";
             Background = "#F7F7F5";
             CardBackground = "#FFFFFF";
