@@ -1,0 +1,1335 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+using System.Windows.Forms;
+using System.Web.Script.Serialization;
+using Microsoft.Win32;
+
+namespace CodexRateMonitorNative
+{
+    internal static class Program
+    {
+        [STAThread]
+        private static void Main(string[] args)
+        {
+            bool created;
+            using (var mutex = new Mutex(true, @"Local\CodexRateMonitorNative", out created))
+            {
+                if (!created)
+                    return;
+
+                NativeMethods.SetProcessDPIAware();
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                bool showSettings = args != null &&
+                    args.Any(delegate(string value)
+                    {
+                        return string.Equals(value, "--settings", StringComparison.OrdinalIgnoreCase);
+                    });
+                using (var context = new MonitorContext(showSettings))
+                    Application.Run(context);
+            }
+        }
+    }
+
+    internal sealed class MonitorContext : ApplicationContext, IDisposable
+    {
+        private const string StartupRegistryPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        private const string StartupValueName = "Codex Rate Monitor";
+
+        private readonly OverlayForm overlay;
+        private readonly NotifyIcon trayIcon;
+        private readonly System.Windows.Forms.Timer timer;
+        private readonly AppServerClient appServer;
+        private ToolStripMenuItem startupItem;
+        private ContextMenuStrip trayMenu;
+        private MonitorSettings settings;
+        private AppearanceSettingsForm appearanceForm;
+        private DateTime lastRequest = DateTime.MinValue;
+        private bool disposed;
+
+        public MonitorContext(bool showSettings)
+        {
+            settings = MonitorSettings.Load();
+            I18n.SetLanguage(settings.Language);
+            overlay = new OverlayForm(settings);
+            IntPtr ignored = overlay.Handle;
+
+            appServer = new AppServerClient();
+            appServer.SnapshotReceived += OnSnapshotReceived;
+            appServer.StatusChanged += OnStatusChanged;
+
+            trayIcon = new NotifyIcon();
+            trayIcon.Icon = SystemIcons.Information;
+            trayIcon.Text = I18n.T("AppTitle");
+            trayMenu = BuildTrayMenu();
+            trayIcon.ContextMenuStrip = trayMenu;
+            trayIcon.Visible = true;
+            trayIcon.DoubleClick += delegate { ShowAppearanceSettings(); };
+
+            timer = new System.Windows.Forms.Timer();
+            timer.Interval = 250;
+            timer.Tick += OnTimerTick;
+            timer.Start();
+
+            if (showSettings)
+                ShowAppearanceSettings();
+        }
+
+        private ContextMenuStrip BuildTrayMenu()
+        {
+            var menu = new ContextMenuStrip();
+            menu.Items.Add(I18n.T("RefreshNow"), null, delegate { RequestRateLimits(); });
+            menu.Items.Add(I18n.T("ReloadStyle"), null, delegate { ReloadSettings(); });
+            menu.Items.Add(I18n.T("AppearanceMenu"), null, delegate { ShowAppearanceSettings(); });
+            menu.Items.Add(new ToolStripSeparator());
+            var topItem = new ToolStripMenuItem(I18n.T("TopPosition"));
+            topItem.Click += delegate { SetPosition("top"); };
+            menu.Items.Add(topItem);
+            var bottomItem = new ToolStripMenuItem(I18n.T("BottomPosition"));
+            bottomItem.Click += delegate { SetPosition("bottom-left"); };
+            menu.Items.Add(bottomItem);
+            menu.Items.Add(new ToolStripSeparator());
+            startupItem = new ToolStripMenuItem(I18n.T("Startup"));
+            startupItem.Checked = IsStartupEnabled();
+            startupItem.Click += delegate { ToggleStartup(); };
+            menu.Items.Add(startupItem);
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(I18n.T("Exit"), null, delegate { ExitMonitor(); });
+            return menu;
+        }
+
+        private void RefreshTrayLanguage()
+        {
+            ContextMenuStrip old = trayMenu;
+            trayMenu = BuildTrayMenu();
+            trayIcon.ContextMenuStrip = trayMenu;
+            trayIcon.Text = I18n.T("AppTitle");
+            if (old != null)
+                old.Dispose();
+        }
+
+        private void OnTimerTick(object sender, EventArgs e)
+        {
+            IntPtr codexWindow = WindowLocator.FindCodexMainWindow();
+            bool codexIsForeground = codexWindow != IntPtr.Zero &&
+                                     !NativeMethods.IsIconic(codexWindow) &&
+                                     WindowLocator.IsCodexForeground();
+
+            if (codexIsForeground)
+            {
+                overlay.AttachTo(codexWindow);
+                if (!appServer.IsRunning)
+                    StartAppServer();
+            }
+            else
+            {
+                overlay.Hide();
+            }
+
+            if (appServer.IsInitialized &&
+                (DateTime.Now - lastRequest).TotalSeconds >= settings.RefreshSeconds)
+            {
+                RequestRateLimits();
+            }
+        }
+
+        private void StartAppServer()
+        {
+            overlay.SetStatus(I18n.T("Connecting"));
+            try
+            {
+                appServer.Start();
+            }
+            catch (Exception ex)
+            {
+                overlay.SetStatus(I18n.T("ServiceError"));
+                trayIcon.Text = SafeTrayText(I18n.F("StartFailed", ex.Message));
+            }
+        }
+
+        private void RequestRateLimits()
+        {
+            if (!appServer.IsRunning)
+            {
+                if (WindowLocator.FindCodexMainWindow() != IntPtr.Zero)
+                    StartAppServer();
+                return;
+            }
+
+            if (!appServer.IsInitialized)
+                return;
+
+            lastRequest = DateTime.Now;
+            appServer.RequestRateLimits();
+        }
+
+        private void OnSnapshotReceived(RateSnapshot snapshot)
+        {
+            Ui(delegate
+            {
+                overlay.SetSnapshot(snapshot);
+                trayIcon.Text = SafeTrayText(
+                    string.Format(CultureInfo.InvariantCulture,
+                        I18n.T("UsageTray"),
+                        snapshot.Primary == null ? 0 : snapshot.Primary.UsedPercent,
+                        snapshot.Secondary == null ? 0 : snapshot.Secondary.UsedPercent));
+            });
+        }
+
+        private void OnStatusChanged(string status)
+        {
+            Ui(delegate
+            {
+                overlay.SetStatus(status);
+                trayIcon.Text = SafeTrayText(I18n.F("TrayStatus", status));
+            });
+        }
+
+        private void Ui(Action action)
+        {
+            if (disposed)
+                return;
+            try
+            {
+                if (overlay.InvokeRequired)
+                    overlay.BeginInvoke(action);
+                else
+                    action();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
+
+        private static string SafeTrayText(string value)
+        {
+            if (value.Length > 63)
+                return value.Substring(0, 63);
+            return value;
+        }
+
+        private void SetPosition(string position)
+        {
+            settings.Position = position;
+            settings.Save();
+            overlay.ApplySettings(settings);
+        }
+
+        private void ReloadSettings()
+        {
+            settings = MonitorSettings.Load();
+            I18n.SetLanguage(settings.Language);
+            RefreshTrayLanguage();
+            overlay.ApplySettings(settings);
+            trayIcon.Text = I18n.T("StyleReloaded");
+        }
+
+        private void ShowAppearanceSettings()
+        {
+            if (appearanceForm != null && !appearanceForm.IsDisposed)
+            {
+                appearanceForm.Activate();
+                return;
+            }
+
+            MonitorSettings original = settings.Clone();
+            appearanceForm = new AppearanceSettingsForm(
+                settings.Clone(),
+                delegate(MonitorSettings preview)
+                {
+                    overlay.ApplySettings(preview);
+                },
+                delegate(MonitorSettings saved)
+                {
+                    settings = saved.Clone();
+                    I18n.SetLanguage(settings.Language);
+                    settings.Save();
+                    RefreshTrayLanguage();
+                    overlay.ApplySettings(settings);
+                    trayIcon.Text = I18n.T("AppearanceSaved");
+                },
+                delegate
+                {
+                    overlay.ApplySettings(original);
+                });
+            appearanceForm.FormClosed += delegate { appearanceForm = null; };
+            appearanceForm.Show();
+            appearanceForm.Activate();
+        }
+
+        private bool IsStartupEnabled()
+        {
+            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(StartupRegistryPath, false))
+            {
+                string value = key == null ? null : key.GetValue(StartupValueName) as string;
+                return !string.IsNullOrWhiteSpace(value);
+            }
+        }
+
+        private void ToggleStartup()
+        {
+            using (RegistryKey key = Registry.CurrentUser.CreateSubKey(StartupRegistryPath))
+            {
+                if (startupItem.Checked)
+                {
+                    key.DeleteValue(StartupValueName, false);
+                    startupItem.Checked = false;
+                }
+                else
+                {
+                    string executable = Application.ExecutablePath;
+                    key.SetValue(StartupValueName, "\"" + executable + "\"", RegistryValueKind.String);
+                    startupItem.Checked = true;
+                }
+            }
+        }
+
+        private void ExitMonitor()
+        {
+            Dispose();
+            ExitThread();
+        }
+
+        protected override void ExitThreadCore()
+        {
+            Dispose();
+            base.ExitThreadCore();
+        }
+
+        public new void Dispose()
+        {
+            if (disposed)
+                return;
+            disposed = true;
+            timer.Stop();
+            timer.Dispose();
+            trayIcon.Visible = false;
+            trayIcon.Dispose();
+            if (appearanceForm != null && !appearanceForm.IsDisposed)
+                appearanceForm.Close();
+            appServer.Dispose();
+            overlay.Close();
+            overlay.Dispose();
+        }
+    }
+
+    internal sealed class OverlayForm : Form
+    {
+        private MonitorSettings settings;
+        private RateSnapshot snapshot;
+        private string status = I18n.T("Connecting");
+
+        public OverlayForm(MonitorSettings initialSettings)
+        {
+            settings = initialSettings;
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            TopMost = true;
+            StartPosition = FormStartPosition.Manual;
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.AllPaintingInWmPaint |
+                     ControlStyles.UserPaint |
+                     ControlStyles.OptimizedDoubleBuffer, true);
+            ApplySettings(initialSettings);
+        }
+
+        protected override bool ShowWithoutActivation
+        {
+            get { return true; }
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                const int WS_EX_TRANSPARENT = 0x20;
+                const int WS_EX_TOOLWINDOW = 0x80;
+                const int WS_EX_NOACTIVATE = 0x08000000;
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+                return cp;
+            }
+        }
+
+        public void ApplySettings(MonitorSettings value)
+        {
+            settings = value;
+            Opacity = settings.Style.Opacity;
+            int width = (int)Math.Round((settings.Position == "bottom-left" ? 184 : 470) * settings.Style.Scale);
+            int height = (int)Math.Round((settings.Position == "bottom-left" ? 62 : 40) * settings.Style.Scale);
+            Size = new Size(width, height);
+            UpdateRegion();
+            Invalidate();
+        }
+
+        public void SetSnapshot(RateSnapshot value)
+        {
+            if (snapshot != null && value != null)
+            {
+                if (value.Primary == null)
+                    value.Primary = snapshot.Primary;
+                if (value.Secondary == null)
+                    value.Secondary = snapshot.Secondary;
+                if (string.IsNullOrEmpty(value.PlanType))
+                    value.PlanType = snapshot.PlanType;
+            }
+            snapshot = value;
+            status = null;
+            Invalidate();
+        }
+
+        public void SetStatus(string value)
+        {
+            if (snapshot == null)
+                status = value;
+            Invalidate();
+        }
+
+        public void AttachTo(IntPtr codexWindow)
+        {
+            NativeMethods.RECT rect;
+            if (!NativeMethods.GetWindowRect(codexWindow, out rect))
+            {
+                Hide();
+                return;
+            }
+
+            int x;
+            int y;
+            if (settings.Position == "bottom-left")
+            {
+                x = rect.Left + 112;
+                y = rect.Bottom - Height - 4;
+            }
+            else
+            {
+                x = rect.Left + ((rect.Right - rect.Left) - Width) / 2;
+                y = rect.Top + 4;
+            }
+
+            NativeMethods.SetWindowPos(
+                Handle,
+                NativeMethods.HWND_TOPMOST,
+                x,
+                y,
+                Width,
+                Height,
+                NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
+            if (!Visible)
+                NativeMethods.ShowWindow(Handle, NativeMethods.SW_SHOWNOACTIVATE);
+        }
+
+        private void UpdateRegion()
+        {
+            if (Width <= 0 || Height <= 0)
+                return;
+            float radius = (float)(settings.Style.CornerRadius * settings.Style.Scale);
+            using (GraphicsPath path = DrawingHelpers.RoundRect(
+                new RectangleF(0, 0, Width, Height), radius))
+            {
+                Region old = Region;
+                Region = new Region(path);
+                if (old != null)
+                    old.Dispose();
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+            float scale = (float)settings.Style.Scale;
+            g.ScaleTransform(scale, scale);
+
+            Color outer = ColorTools.Parse(settings.Style.Background);
+            Color border = ColorTools.Parse(settings.Style.Border);
+            Color card = ColorTools.Parse(settings.Style.CardBackground);
+            Color text = ColorTools.Parse(settings.Style.Text);
+            Color muted = ColorTools.Parse(settings.Style.MutedText);
+            Color track = ColorTools.Parse(settings.Style.Track);
+
+            using (var outerBrush = new SolidBrush(outer))
+            using (var borderPen = new Pen(border, 1f))
+            using (GraphicsPath outerPath = DrawingHelpers.RoundRect(
+                new RectangleF(0.5f, 0.5f,
+                    (Width / scale) - 1f, (Height / scale) - 1f),
+                (float)settings.Style.CornerRadius))
+            {
+                g.FillPath(outerBrush, outerPath);
+                g.DrawPath(borderPen, outerPath);
+            }
+
+            if (settings.Position == "bottom-left")
+            {
+                DrawCard(g, new RectangleF(3, 3, 178, 27), true, card, text, muted, track);
+                DrawCard(g, new RectangleF(3, 32, 178, 27), false, card, text, muted, track);
+            }
+            else
+            {
+                DrawCard(g, new RectangleF(5, 5, 228, 30), true, card, text, muted, track);
+                DrawCard(g, new RectangleF(237, 5, 228, 30), false, card, text, muted, track);
+            }
+        }
+
+        private void DrawCard(
+            Graphics g,
+            RectangleF bounds,
+            bool primary,
+            Color card,
+            Color text,
+            Color muted,
+            Color track)
+        {
+            float cardRadius = Math.Max(0, (float)settings.Style.CornerRadius - 3f);
+            using (var brush = new SolidBrush(card))
+            using (GraphicsPath path = DrawingHelpers.RoundRect(bounds, cardRadius))
+                g.FillPath(brush, path);
+
+            WindowUsage usage = snapshot == null ? null : (primary ? snapshot.Primary : snapshot.Secondary);
+            string label = primary ? I18n.T("FiveHour") : I18n.T("SevenDay");
+            string percent = usage == null ? "--%" :
+                Math.Round(usage.UsedPercent).ToString(CultureInfo.InvariantCulture) + "%";
+            string reset = usage == null ? (status ?? I18n.T("Connecting")) : FormatReset(usage.ResetsAt);
+
+            FontFamily family;
+            try
+            {
+                family = new FontFamily(settings.Style.FontFamily);
+            }
+            catch
+            {
+                family = SystemFonts.MessageBoxFont.FontFamily;
+            }
+
+            float mainFontSize = (float)settings.Style.FontSize;
+            float resetFontSize = (float)settings.Style.ResetFontSize;
+            using (family)
+            using (var labelFont = new Font(family, mainFontSize, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (var percentFont = new Font(family, mainFontSize, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (var resetFont = new Font(family, resetFontSize, FontStyle.Regular, GraphicsUnit.Pixel))
+            using (var textBrush = new SolidBrush(text))
+            using (var mutedBrush = new SolidBrush(muted))
+            {
+                float textY = bounds.Y + Math.Max(3f, (bounds.Height - mainFontSize - 5f) / 2f);
+                g.DrawString(label, labelFont, textBrush, bounds.X + 7, textY);
+                g.DrawString(percent, percentFont, textBrush, bounds.X + 48, textY);
+                var format = new StringFormat();
+                format.Alignment = StringAlignment.Far;
+                format.LineAlignment = StringAlignment.Center;
+                g.DrawString(reset, resetFont, mutedBrush,
+                    new RectangleF(bounds.X + 82, bounds.Y + 1, bounds.Width - 88, bounds.Height - 5), format);
+                format.Dispose();
+            }
+
+            float value = usage == null
+                ? 0f
+                : (float)Math.Max(0, Math.Min(100, usage.UsedPercent));
+            Color normal = ColorTools.Parse(primary ? settings.Style.Primary : settings.Style.Secondary);
+            Color progress = value >= 85
+                ? ColorTools.Parse(settings.Style.Danger)
+                : value >= 60
+                    ? ColorTools.Parse(settings.Style.Warning)
+                    : normal;
+
+            RectangleF trackRect = new RectangleF(bounds.X + 7, bounds.Bottom - 4, bounds.Width - 14, 2);
+            using (var trackBrush = new SolidBrush(track))
+                g.FillRectangle(trackBrush, trackRect);
+            using (var progressBrush = new SolidBrush(progress))
+                g.FillRectangle(progressBrush,
+                    new RectangleF(trackRect.X, trackRect.Y, trackRect.Width * value / 100f, trackRect.Height));
+        }
+
+        private static string FormatReset(long? unixSeconds)
+        {
+            if (!unixSeconds.HasValue)
+                return "--";
+            DateTime local = DateTimeOffset.FromUnixTimeSeconds(unixSeconds.Value).LocalDateTime;
+            return I18n.FormatDate(local);
+        }
+    }
+
+    internal sealed class AppServerClient : IDisposable
+    {
+        private readonly JavaScriptSerializer json = new JavaScriptSerializer();
+        private readonly object writeLock = new object();
+        private readonly object requestLock = new object();
+        private readonly HashSet<int> rateLimitRequests = new HashSet<int>();
+        private Process process;
+        private Thread outputThread;
+        private Thread errorThread;
+        private int requestId = 10;
+        private bool disposed;
+
+        public event Action<RateSnapshot> SnapshotReceived;
+        public event Action<string> StatusChanged;
+
+        public bool IsInitialized { get; private set; }
+
+        public bool IsRunning
+        {
+            get
+            {
+                try
+                {
+                    return process != null && !process.HasExited;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+        }
+
+        public void Start()
+        {
+            if (IsRunning)
+                return;
+
+            if (process != null)
+            {
+                process.Dispose();
+                process = null;
+            }
+
+            string executable = NativeCodexResolver.Find();
+            if (string.IsNullOrEmpty(executable))
+                throw new FileNotFoundException(I18n.T("CliMissing"));
+
+            var startInfo = new ProcessStartInfo();
+            startInfo.FileName = executable;
+            startInfo.Arguments = "app-server --stdio";
+            startInfo.UseShellExecute = false;
+            startInfo.CreateNoWindow = true;
+            startInfo.WindowStyle = ProcessWindowStyle.Hidden;
+            startInfo.RedirectStandardInput = true;
+            startInfo.RedirectStandardOutput = true;
+            startInfo.RedirectStandardError = true;
+            startInfo.StandardOutputEncoding = Encoding.UTF8;
+            startInfo.StandardErrorEncoding = Encoding.UTF8;
+
+            process = Process.Start(startInfo);
+            IsInitialized = false;
+
+            outputThread = new Thread(ReadOutput);
+            outputThread.IsBackground = true;
+            outputThread.Name = "Codex app-server output";
+            outputThread.Start();
+
+            errorThread = new Thread(DrainErrors);
+            errorThread.IsBackground = true;
+            errorThread.Name = "Codex app-server errors";
+            errorThread.Start();
+
+            var initialize = new Dictionary<string, object>();
+            initialize["method"] = "initialize";
+            initialize["id"] = 1;
+            var clientInfo = new Dictionary<string, object>();
+            clientInfo["name"] = "codex-rate-monitor-native";
+            clientInfo["title"] = "Codex Rate Monitor";
+            clientInfo["version"] = BuildVersion.Value;
+            var capabilities = new Dictionary<string, object>();
+            capabilities["experimentalApi"] = true;
+            capabilities["requestAttestation"] = false;
+            capabilities["optOutNotificationMethods"] = new[]
+            {
+                "thread/started",
+                "thread/status/changed",
+                "thread/tokenUsage/updated"
+            };
+            var parameters = new Dictionary<string, object>();
+            parameters["clientInfo"] = clientInfo;
+            parameters["capabilities"] = capabilities;
+            initialize["params"] = parameters;
+            Send(initialize);
+        }
+
+        public void RequestRateLimits()
+        {
+            if (!IsInitialized)
+                return;
+            int id = Interlocked.Increment(ref requestId);
+            lock (requestLock)
+                rateLimitRequests.Add(id);
+            var message = new Dictionary<string, object>();
+            message["method"] = "account/rateLimits/read";
+            message["id"] = id;
+            Send(message);
+        }
+
+        private void ReadOutput()
+        {
+            try
+            {
+                string line;
+                while (!disposed && process != null &&
+                       (line = process.StandardOutput.ReadLine()) != null)
+                {
+                    ProcessMessage(line);
+                }
+            }
+            catch (Exception ex)
+            {
+                RaiseStatus(I18n.F("CommunicationError", ex.Message));
+            }
+            finally
+            {
+                IsInitialized = false;
+            }
+        }
+
+        private void DrainErrors()
+        {
+            try
+            {
+                while (!disposed && process != null &&
+                       process.StandardError.ReadLine() != null)
+                {
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private void ProcessMessage(string line)
+        {
+            Dictionary<string, object> message;
+            try
+            {
+                message = json.DeserializeObject(line) as Dictionary<string, object>;
+            }
+            catch
+            {
+                return;
+            }
+            if (message == null)
+                return;
+
+            int id;
+            if (TryInt(message, "id", out id) && id == 1)
+            {
+                if (message.ContainsKey("error"))
+                {
+                    RaiseStatus(I18n.T("InitializationFailed"));
+                    return;
+                }
+                var initialized = new Dictionary<string, object>();
+                initialized["method"] = "initialized";
+                Send(initialized);
+                IsInitialized = true;
+                RequestRateLimits();
+                return;
+            }
+
+            bool isRateResponse = false;
+            if (TryInt(message, "id", out id))
+            {
+                lock (requestLock)
+                {
+                    if (rateLimitRequests.Contains(id))
+                    {
+                        rateLimitRequests.Remove(id);
+                        isRateResponse = true;
+                    }
+                }
+            }
+
+            if (isRateResponse)
+            {
+                if (message.ContainsKey("error"))
+                {
+                    RaiseStatus(I18n.T("NotSignedIn"));
+                    return;
+                }
+                var result = GetDictionary(message, "result");
+                RateSnapshot snapshot = ParseReadResult(result);
+                if (snapshot != null)
+                    RaiseSnapshot(snapshot);
+                return;
+            }
+
+            string method = GetString(message, "method");
+            if (method == "account/rateLimits/updated")
+            {
+                var parameters = GetDictionary(message, "params");
+                var rateLimits = GetDictionary(parameters, "rateLimits");
+                RateSnapshot snapshot = ParseSnapshot(rateLimits);
+                if (snapshot != null)
+                    RaiseSnapshot(snapshot);
+            }
+        }
+
+        private RateSnapshot ParseReadResult(Dictionary<string, object> result)
+        {
+            if (result == null)
+                return null;
+            var byId = GetDictionary(result, "rateLimitsByLimitId");
+            if (byId != null)
+            {
+                var codex = GetDictionary(byId, "codex");
+                if (codex != null)
+                    return ParseSnapshot(codex);
+            }
+            return ParseSnapshot(GetDictionary(result, "rateLimits"));
+        }
+
+        private static RateSnapshot ParseSnapshot(Dictionary<string, object> source)
+        {
+            if (source == null)
+                return null;
+            var snapshot = new RateSnapshot();
+            snapshot.Primary = ParseWindow(GetDictionary(source, "primary"));
+            snapshot.Secondary = ParseWindow(GetDictionary(source, "secondary"));
+            snapshot.PlanType = GetString(source, "planType");
+            return snapshot;
+        }
+
+        private static WindowUsage ParseWindow(Dictionary<string, object> source)
+        {
+            if (source == null)
+                return null;
+            var usage = new WindowUsage();
+            usage.UsedPercent = GetDouble(source, "usedPercent");
+            long value;
+            if (TryLong(source, "resetsAt", out value))
+                usage.ResetsAt = value;
+            return usage;
+        }
+
+        private void Send(Dictionary<string, object> message)
+        {
+            lock (writeLock)
+            {
+                if (!IsRunning)
+                    return;
+                process.StandardInput.WriteLine(json.Serialize(message));
+                process.StandardInput.Flush();
+            }
+        }
+
+        private void RaiseSnapshot(RateSnapshot snapshot)
+        {
+            Action<RateSnapshot> handler = SnapshotReceived;
+            if (handler != null)
+                handler(snapshot);
+        }
+
+        private void RaiseStatus(string status)
+        {
+            Action<string> handler = StatusChanged;
+            if (handler != null)
+                handler(status);
+        }
+
+        private static Dictionary<string, object> GetDictionary(
+            Dictionary<string, object> source, string key)
+        {
+            if (source == null)
+                return null;
+            object value;
+            if (!source.TryGetValue(key, out value) || value == null)
+                return null;
+            return value as Dictionary<string, object>;
+        }
+
+        private static string GetString(Dictionary<string, object> source, string key)
+        {
+            if (source == null)
+                return null;
+            object value;
+            return source.TryGetValue(key, out value) && value != null
+                ? Convert.ToString(value, CultureInfo.InvariantCulture)
+                : null;
+        }
+
+        private static bool TryInt(Dictionary<string, object> source, string key, out int value)
+        {
+            value = 0;
+            if (source == null)
+                return false;
+            object raw;
+            if (!source.TryGetValue(key, out raw) || raw == null)
+                return false;
+            try
+            {
+                value = Convert.ToInt32(raw, CultureInfo.InvariantCulture);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryLong(Dictionary<string, object> source, string key, out long value)
+        {
+            value = 0;
+            if (source == null)
+                return false;
+            object raw;
+            if (!source.TryGetValue(key, out raw) || raw == null)
+                return false;
+            try
+            {
+                value = Convert.ToInt64(raw, CultureInfo.InvariantCulture);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static double GetDouble(Dictionary<string, object> source, string key)
+        {
+            if (source == null)
+                return 0;
+            object raw;
+            if (!source.TryGetValue(key, out raw) || raw == null)
+                return 0;
+            try
+            {
+                return Convert.ToDouble(raw, CultureInfo.InvariantCulture);
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        public void Dispose()
+        {
+            if (disposed)
+                return;
+            disposed = true;
+            IsInitialized = false;
+
+            try
+            {
+                if (process != null && !process.HasExited)
+                {
+                    process.StandardInput.Close();
+                    if (!process.WaitForExit(1000))
+                        process.Kill();
+                }
+            }
+            catch
+            {
+            }
+            if (process != null)
+                process.Dispose();
+            process = null;
+        }
+    }
+
+    internal static class NativeCodexResolver
+    {
+        public static string Find()
+        {
+            foreach (string directory in CandidatePathDirectories())
+            {
+                string native = FindNativeUnderNpmDirectory(directory);
+                if (!string.IsNullOrEmpty(native))
+                    return native;
+            }
+
+            foreach (string directory in CandidatePathDirectories())
+            {
+                string executable = Path.Combine(directory, "codex.exe");
+                if (File.Exists(executable) &&
+                    executable.IndexOf(@"\WindowsApps\", StringComparison.OrdinalIgnoreCase) < 0)
+                    return executable;
+            }
+
+            return null;
+        }
+
+        private static IEnumerable<string> CandidatePathDirectories()
+        {
+            var values = new List<string>();
+            string path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+            values.AddRange(path.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries));
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            if (!string.IsNullOrEmpty(appData))
+                values.Add(Path.Combine(appData, "npm"));
+
+            return values
+                .Select(delegate(string value) { return value.Trim().Trim('"'); })
+                .Where(Directory.Exists)
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static string FindNativeUnderNpmDirectory(string commandDirectory)
+        {
+            if (!File.Exists(Path.Combine(commandDirectory, "codex.cmd")) &&
+                !Directory.Exists(Path.Combine(commandDirectory, "node_modules", "@openai", "codex")))
+                return null;
+
+            string packageRoot = Path.Combine(
+                commandDirectory, "node_modules", "@openai", "codex", "node_modules");
+            if (!Directory.Exists(packageRoot))
+                return null;
+
+            try
+            {
+                string[] files = Directory.GetFiles(packageRoot, "codex.exe", SearchOption.AllDirectories);
+                return files.FirstOrDefault(delegate(string file)
+                {
+                    return file.IndexOf(@"\vendor\", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                           file.EndsWith(@"\bin\codex.exe", StringComparison.OrdinalIgnoreCase);
+                });
+            }
+            catch
+            {
+                return null;
+            }
+        }
+    }
+
+    internal static class WindowLocator
+    {
+        public static IntPtr FindCodexMainWindow()
+        {
+            Process[] processes;
+            try
+            {
+                processes = Process.GetProcessesByName("Codex");
+            }
+            catch
+            {
+                return IntPtr.Zero;
+            }
+
+            try
+            {
+                return processes
+                    .Where(delegate(Process process)
+                    {
+                        try { return process.MainWindowHandle != IntPtr.Zero; }
+                        catch { return false; }
+                    })
+                    .OrderBy(delegate(Process process)
+                    {
+                        try { return process.StartTime; }
+                        catch { return DateTime.MinValue; }
+                    })
+                    .Select(delegate(Process process) { return process.MainWindowHandle; })
+                    .LastOrDefault();
+            }
+            finally
+            {
+                foreach (Process process in processes)
+                    process.Dispose();
+            }
+        }
+
+        public static bool IsCodexForeground()
+        {
+            IntPtr foreground = NativeMethods.GetForegroundWindow();
+            if (foreground == IntPtr.Zero)
+                return false;
+            uint processId;
+            NativeMethods.GetWindowThreadProcessId(foreground, out processId);
+            try
+            {
+                using (Process process = Process.GetProcessById((int)processId))
+                    return string.Equals(process.ProcessName, "Codex", StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+    }
+
+    internal sealed class MonitorSettings
+    {
+        public string Language { get; set; }
+        public string Position { get; set; }
+        public int RefreshSeconds { get; set; }
+        public StyleSettings Style { get; set; }
+
+        public MonitorSettings()
+        {
+            Language = "auto";
+            Position = "bottom-left";
+            RefreshSeconds = 60;
+            Style = new StyleSettings();
+        }
+
+        public static string SettingsPath
+        {
+            get { return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json"); }
+        }
+
+        public static MonitorSettings Load()
+        {
+            MonitorSettings result = new MonitorSettings();
+            if (!File.Exists(SettingsPath))
+                return result;
+            try
+            {
+                string text = File.ReadAllText(SettingsPath, Encoding.UTF8);
+                var loaded = new JavaScriptSerializer().Deserialize<MonitorSettings>(text);
+                if (loaded != null)
+                    result = loaded;
+            }
+            catch
+            {
+            }
+            result.Normalize();
+            return result;
+        }
+
+        public void Save()
+        {
+            Normalize();
+            try
+            {
+                string json = new JavaScriptSerializer().Serialize(this);
+                File.WriteAllText(SettingsPath, json, new UTF8Encoding(false));
+            }
+            catch
+            {
+            }
+        }
+
+        public MonitorSettings Clone()
+        {
+            var clone = new MonitorSettings();
+            clone.Language = Language;
+            clone.Position = Position;
+            clone.RefreshSeconds = RefreshSeconds;
+            clone.Style = Style == null ? new StyleSettings() : Style.Clone();
+            clone.Normalize();
+            return clone;
+        }
+
+        private void Normalize()
+        {
+            Language = I18n.NormalizeSetting(Language);
+            if (Position != "top" && Position != "bottom-left")
+                Position = "top";
+            RefreshSeconds = Math.Max(30, Math.Min(900, RefreshSeconds));
+            if (Style == null)
+                Style = new StyleSettings();
+            Style.Normalize();
+        }
+    }
+
+    internal sealed class StyleSettings
+    {
+        public double Scale { get; set; }
+        public double Opacity { get; set; }
+        public double CornerRadius { get; set; }
+        public double FontSize { get; set; }
+        public double ResetFontSize { get; set; }
+        public string FontFamily { get; set; }
+        public string Background { get; set; }
+        public string CardBackground { get; set; }
+        public string Border { get; set; }
+        public string Text { get; set; }
+        public string MutedText { get; set; }
+        public string Track { get; set; }
+        public string Primary { get; set; }
+        public string Secondary { get; set; }
+        public string Warning { get; set; }
+        public string Danger { get; set; }
+
+        public StyleSettings()
+        {
+            Scale = 1.0;
+            Opacity = 0.97;
+            CornerRadius = 9;
+            FontSize = 14;
+            ResetFontSize = 11;
+            FontFamily = "Microsoft YaHei UI";
+            Background = "#F7F7F5";
+            CardBackground = "#FFFFFF";
+            Border = "#D8D8D4";
+            Text = "#252525";
+            MutedText = "#727272";
+            Track = "#EAEAE7";
+            Primary = "#4F8CFF";
+            Secondary = "#8A63D2";
+            Warning = "#E6A23C";
+            Danger = "#E45757";
+        }
+
+        public void Normalize()
+        {
+            Scale = Math.Max(0.75, Math.Min(1.5, Scale));
+            Opacity = Math.Max(0.5, Math.Min(1.0, Opacity));
+            CornerRadius = Math.Max(0, Math.Min(20, CornerRadius));
+            FontSize = Math.Max(10, Math.Min(22, FontSize));
+            ResetFontSize = Math.Max(9, Math.Min(18, ResetFontSize));
+            if (string.IsNullOrWhiteSpace(FontFamily))
+                FontFamily = "Microsoft YaHei UI";
+            Background = ColorTools.Normalize(Background, "#F7F7F5");
+            CardBackground = ColorTools.Normalize(CardBackground, "#FFFFFF");
+            Border = ColorTools.Normalize(Border, "#D8D8D4");
+            Text = ColorTools.Normalize(Text, "#252525");
+            MutedText = ColorTools.Normalize(MutedText, "#727272");
+            Track = ColorTools.Normalize(Track, "#EAEAE7");
+            Primary = ColorTools.Normalize(Primary, "#4F8CFF");
+            Secondary = ColorTools.Normalize(Secondary, "#8A63D2");
+            Warning = ColorTools.Normalize(Warning, "#E6A23C");
+            Danger = ColorTools.Normalize(Danger, "#E45757");
+        }
+
+        public StyleSettings Clone()
+        {
+            return new StyleSettings
+            {
+                Scale = Scale,
+                Opacity = Opacity,
+                CornerRadius = CornerRadius,
+                FontSize = FontSize,
+                ResetFontSize = ResetFontSize,
+                FontFamily = FontFamily,
+                Background = Background,
+                CardBackground = CardBackground,
+                Border = Border,
+                Text = Text,
+                MutedText = MutedText,
+                Track = Track,
+                Primary = Primary,
+                Secondary = Secondary,
+                Warning = Warning,
+                Danger = Danger
+            };
+        }
+    }
+
+    internal sealed class RateSnapshot
+    {
+        public WindowUsage Primary { get; set; }
+        public WindowUsage Secondary { get; set; }
+        public string PlanType { get; set; }
+    }
+
+    internal sealed class WindowUsage
+    {
+        public double UsedPercent { get; set; }
+        public long? ResetsAt { get; set; }
+    }
+
+    internal static class DrawingHelpers
+    {
+        public static GraphicsPath RoundRect(RectangleF bounds, float radius)
+        {
+            var path = new GraphicsPath();
+            float diameter = Math.Max(0, radius * 2);
+            if (diameter <= 0.1f)
+            {
+                path.AddRectangle(bounds);
+                path.CloseFigure();
+                return path;
+            }
+            diameter = Math.Min(diameter, Math.Min(bounds.Width, bounds.Height));
+            var arc = new RectangleF(bounds.X, bounds.Y, diameter, diameter);
+            path.AddArc(arc, 180, 90);
+            arc.X = bounds.Right - diameter;
+            path.AddArc(arc, 270, 90);
+            arc.Y = bounds.Bottom - diameter;
+            path.AddArc(arc, 0, 90);
+            arc.X = bounds.Left;
+            path.AddArc(arc, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+    }
+
+    internal static class ColorTools
+    {
+        public static string Normalize(string value, string fallback)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return fallback;
+            string text = value.Trim();
+            if ((text.Length == 7 || text.Length == 9) && text[0] == '#')
+            {
+                int ignored;
+                if (int.TryParse(text.Substring(1), NumberStyles.HexNumber,
+                    CultureInfo.InvariantCulture, out ignored))
+                    return text;
+            }
+            return fallback;
+        }
+
+        public static Color Parse(string value)
+        {
+            string text = Normalize(value, "#000000");
+            int r = int.Parse(text.Substring(1, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+            int g = int.Parse(text.Substring(3, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+            int b = int.Parse(text.Substring(5, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+            if (text.Length == 9)
+            {
+                int a = int.Parse(text.Substring(7, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+                return Color.FromArgb(a, r, g, b);
+            }
+            return Color.FromArgb(r, g, b);
+        }
+    }
+
+    internal static class NativeMethods
+    {
+        internal static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+        internal const uint SWP_NOACTIVATE = 0x0010;
+        internal const uint SWP_SHOWWINDOW = 0x0040;
+        internal const int SW_SHOWNOACTIVATE = 4;
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct RECT
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool SetProcessDPIAware();
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+
+        [DllImport("user32.dll")]
+        internal static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        internal static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool SetWindowPos(
+            IntPtr hWnd,
+            IntPtr hWndInsertAfter,
+            int x,
+            int y,
+            int width,
+            int height,
+            uint flags);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool ShowWindow(IntPtr hWnd, int command);
+    }
+}

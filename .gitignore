@@ -1,0 +1,27 @@
+# Build output
+artifacts/
+.build/
+bin/
+obj/
+*.pdb
+
+# User-specific runtime settings
+settings.json
+
+# Codex/OpenAI local state and credentials
+.codex/
+auth.json
+*.token
+*.secret
+
+# IDE and OS files
+.vs/
+.vscode/
+*.user
+*.suo
+.DS_Store
+Thumbs.db
+
+# Logs and local captures
+*.log
+screenshots-local/

@@ -1,0 +1,280 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+
+namespace CodexRateMonitorNative
+{
+    internal static class I18n
+    {
+        private static readonly Dictionary<string, Dictionary<string, string>> Tables =
+            new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase)
+            {
+                {
+                    "zh-CN", new Dictionary<string, string>
+                    {
+                        {"AppTitle", "Codex 用量监视器"},
+                        {"RefreshNow", "立即刷新"},
+                        {"ReloadStyle", "重新加载样式"},
+                        {"AppearanceMenu", "外观设置…"},
+                        {"TopPosition", "顶部标题栏"},
+                        {"BottomPosition", "左下角头像右侧"},
+                        {"BottomRecommended", "左下角头像右侧（推荐）"},
+                        {"Startup", "开机启动"},
+                        {"Exit", "退出"},
+                        {"Connecting", "连接中"},
+                        {"ServiceError", "服务错误"},
+                        {"StartFailed", "启动失败：{0}"},
+                        {"UsageTray", "Codex 用量：5小时 {0:0}% · 7天 {1:0}%"},
+                        {"TrayStatus", "Codex 用量监视器：{0}"},
+                        {"StyleReloaded", "Codex 用量监视器：样式已重新加载"},
+                        {"AppearanceSaved", "Codex 用量监视器：外观已保存"},
+                        {"FiveHour", "5小时"},
+                        {"SevenDay", "7天"},
+                        {"CliMissing", "未找到原生 Codex CLI，请先更新 Codex CLI。"},
+                        {"CommunicationError", "通信错误：{0}"},
+                        {"InitializationFailed", "初始化失败"},
+                        {"NotSignedIn", "未登录"},
+                        {"SettingsTitle", "Codex 用量监视器 · 外观设置"},
+                        {"DisplayPosition", "显示位置"},
+                        {"Typography", "排版与尺寸"},
+                        {"Colors", "颜色"},
+                        {"SettingsHint", "设置会在上方实时预览。保存后写入 settings.json；取消会恢复打开窗口前的样式。"},
+                        {"AppearanceTitle", "外观设置"},
+                        {"AppearanceSubtitle", "调整悬浮条的位置、字体、尺寸和配色"},
+                        {"Font", "字体"},
+                        {"MainFontSize", "主字号"},
+                        {"TimeFontSize", "时间字号"},
+                        {"Scale", "整体缩放"},
+                        {"Opacity", "透明度"},
+                        {"CornerRadius", "圆角"},
+                        {"OuterBackground", "外框背景"},
+                        {"RowBackground", "行背景"},
+                        {"Border", "边框"},
+                        {"ProgressTrack", "进度槽"},
+                        {"MainText", "主要文字"},
+                        {"TimeText", "时间文字"},
+                        {"FiveHourColor", "5 小时"},
+                        {"SevenDayColor", "7 天"},
+                        {"Warning", "警告"},
+                        {"Danger", "危险"},
+                        {"DarkPreset", "深色预设"},
+                        {"LightPreset", "浅色预设"},
+                        {"SaveClose", "保存并关闭"},
+                        {"Cancel", "取消"},
+                        {"RestoreDefault", "恢复默认"},
+                        {"LivePreview", "实时预览"},
+                        {"Language", "界面语言"},
+                        {"LanguageAuto", "自动（跟随系统）"}
+                    }
+                },
+                {
+                    "zh-TW", new Dictionary<string, string>
+                    {
+                        {"AppTitle", "Codex 用量監視器"},
+                        {"RefreshNow", "立即重新整理"},
+                        {"ReloadStyle", "重新載入樣式"},
+                        {"AppearanceMenu", "外觀設定…"},
+                        {"TopPosition", "頂部標題列"},
+                        {"BottomPosition", "左下角頭像右側"},
+                        {"BottomRecommended", "左下角頭像右側（建議）"},
+                        {"Startup", "開機啟動"},
+                        {"Exit", "結束"},
+                        {"Connecting", "連線中"},
+                        {"ServiceError", "服務錯誤"},
+                        {"StartFailed", "啟動失敗：{0}"},
+                        {"UsageTray", "Codex 用量：5小時 {0:0}% · 7天 {1:0}%"},
+                        {"TrayStatus", "Codex 用量監視器：{0}"},
+                        {"StyleReloaded", "Codex 用量監視器：樣式已重新載入"},
+                        {"AppearanceSaved", "Codex 用量監視器：外觀已儲存"},
+                        {"FiveHour", "5小時"},
+                        {"SevenDay", "7天"},
+                        {"CliMissing", "找不到原生 Codex CLI，請先更新 Codex CLI。"},
+                        {"CommunicationError", "通訊錯誤：{0}"},
+                        {"InitializationFailed", "初始化失敗"},
+                        {"NotSignedIn", "尚未登入"},
+                        {"SettingsTitle", "Codex 用量監視器 · 外觀設定"},
+                        {"DisplayPosition", "顯示位置"},
+                        {"Typography", "排版與尺寸"},
+                        {"Colors", "顏色"},
+                        {"SettingsHint", "設定會在上方即時預覽。儲存後寫入 settings.json；取消會還原開啟視窗前的樣式。"},
+                        {"AppearanceTitle", "外觀設定"},
+                        {"AppearanceSubtitle", "調整浮動列的位置、字型、尺寸與配色"},
+                        {"Font", "字型"},
+                        {"MainFontSize", "主要字級"},
+                        {"TimeFontSize", "時間字級"},
+                        {"Scale", "整體縮放"},
+                        {"Opacity", "透明度"},
+                        {"CornerRadius", "圓角"},
+                        {"OuterBackground", "外框背景"},
+                        {"RowBackground", "列背景"},
+                        {"Border", "邊框"},
+                        {"ProgressTrack", "進度槽"},
+                        {"MainText", "主要文字"},
+                        {"TimeText", "時間文字"},
+                        {"FiveHourColor", "5 小時"},
+                        {"SevenDayColor", "7 天"},
+                        {"Warning", "警告"},
+                        {"Danger", "危險"},
+                        {"DarkPreset", "深色預設"},
+                        {"LightPreset", "淺色預設"},
+                        {"SaveClose", "儲存並關閉"},
+                        {"Cancel", "取消"},
+                        {"RestoreDefault", "還原預設"},
+                        {"LivePreview", "即時預覽"},
+                        {"Language", "介面語言"},
+                        {"LanguageAuto", "自動（跟隨系統）"}
+                    }
+                },
+                {
+                    "en", new Dictionary<string, string>
+                    {
+                        {"AppTitle", "Codex Rate Monitor"},
+                        {"RefreshNow", "Refresh now"},
+                        {"ReloadStyle", "Reload style"},
+                        {"AppearanceMenu", "Appearance settings…"},
+                        {"TopPosition", "Top title bar"},
+                        {"BottomPosition", "Bottom-left, beside profile"},
+                        {"BottomRecommended", "Bottom-left, beside profile (recommended)"},
+                        {"Startup", "Start with Windows"},
+                        {"Exit", "Exit"},
+                        {"Connecting", "Connecting"},
+                        {"ServiceError", "Service error"},
+                        {"StartFailed", "Start failed: {0}"},
+                        {"UsageTray", "Codex usage: 5h {0:0}% · 7d {1:0}%"},
+                        {"TrayStatus", "Codex Rate Monitor: {0}"},
+                        {"StyleReloaded", "Codex Rate Monitor: style reloaded"},
+                        {"AppearanceSaved", "Codex Rate Monitor: appearance saved"},
+                        {"FiveHour", "5h"},
+                        {"SevenDay", "7d"},
+                        {"CliMissing", "Native Codex CLI not found. Update or install Codex CLI first."},
+                        {"CommunicationError", "Communication error: {0}"},
+                        {"InitializationFailed", "Initialization failed"},
+                        {"NotSignedIn", "Not signed in"},
+                        {"SettingsTitle", "Codex Rate Monitor · Appearance"},
+                        {"DisplayPosition", "Display position"},
+                        {"Typography", "Typography and size"},
+                        {"Colors", "Colors"},
+                        {"SettingsHint", "Changes are previewed above. Save writes settings.json; Cancel restores the previous appearance."},
+                        {"AppearanceTitle", "Appearance"},
+                        {"AppearanceSubtitle", "Adjust position, fonts, sizing, and colors"},
+                        {"Font", "Font"},
+                        {"MainFontSize", "Main size"},
+                        {"TimeFontSize", "Time size"},
+                        {"Scale", "Scale"},
+                        {"Opacity", "Opacity"},
+                        {"CornerRadius", "Corner radius"},
+                        {"OuterBackground", "Outer bg"},
+                        {"RowBackground", "Row bg"},
+                        {"Border", "Border"},
+                        {"ProgressTrack", "Track"},
+                        {"MainText", "Main text"},
+                        {"TimeText", "Time text"},
+                        {"FiveHourColor", "5-hour"},
+                        {"SevenDayColor", "7-day"},
+                        {"Warning", "Warning"},
+                        {"Danger", "Danger"},
+                        {"DarkPreset", "Dark preset"},
+                        {"LightPreset", "Light preset"},
+                        {"SaveClose", "Save and close"},
+                        {"Cancel", "Cancel"},
+                        {"RestoreDefault", "Restore defaults"},
+                        {"LivePreview", "Live preview"},
+                        {"Language", "Language"},
+                        {"LanguageAuto", "Auto (system)"}
+                    }
+                }
+            };
+
+        private static string currentLanguage = "en";
+
+        public static string CurrentLanguage
+        {
+            get { return currentLanguage; }
+        }
+
+        public static void SetLanguage(string setting)
+        {
+            currentLanguage = ResolveLanguage(setting);
+        }
+
+        public static string NormalizeSetting(string setting)
+        {
+            if (string.Equals(setting, "zh-CN", StringComparison.OrdinalIgnoreCase))
+                return "zh-CN";
+            if (string.Equals(setting, "zh-TW", StringComparison.OrdinalIgnoreCase))
+                return "zh-TW";
+            if (string.Equals(setting, "en", StringComparison.OrdinalIgnoreCase))
+                return "en";
+            return "auto";
+        }
+
+        public static string ResolveLanguage(string setting)
+        {
+            string normalized = NormalizeSetting(setting);
+            if (normalized != "auto")
+                return normalized;
+            string name = CultureInfo.CurrentUICulture.Name;
+            if (name.StartsWith("zh-TW", StringComparison.OrdinalIgnoreCase) ||
+                name.StartsWith("zh-HK", StringComparison.OrdinalIgnoreCase) ||
+                name.StartsWith("zh-MO", StringComparison.OrdinalIgnoreCase) ||
+                name.StartsWith("zh-Hant", StringComparison.OrdinalIgnoreCase))
+                return "zh-TW";
+            if (name.StartsWith("zh", StringComparison.OrdinalIgnoreCase))
+                return "zh-CN";
+            return "en";
+        }
+
+        public static string T(string key)
+        {
+            return Translate(key, currentLanguage);
+        }
+
+        public static string Translate(string key, string languageSetting)
+        {
+            string language = ResolveLanguage(languageSetting);
+            Dictionary<string, string> table;
+            string value;
+            if (Tables.TryGetValue(language, out table) && table.TryGetValue(key, out value))
+                return value;
+            if (Tables["en"].TryGetValue(key, out value))
+                return value;
+            return key;
+        }
+
+        public static string F(string key, params object[] args)
+        {
+            return string.Format(CultureInfo.CurrentCulture, T(key), args);
+        }
+
+        public static string FormatDate(DateTime value)
+        {
+            return FormatDate(value, currentLanguage);
+        }
+
+        public static string FormatDate(DateTime value, string languageSetting)
+        {
+            string language = ResolveLanguage(languageSetting);
+            if (language == "en")
+                return value.ToString("MMM d HH:mm", CultureInfo.GetCultureInfo("en-US"));
+            return string.Format(CultureInfo.InvariantCulture,
+                "{0}月{1}日 {2:HH:mm}", value.Month, value.Day, value);
+        }
+    }
+
+    internal sealed class LanguageOption
+    {
+        public string Code { get; private set; }
+        public string Label { get; private set; }
+
+        public LanguageOption(string code, string label)
+        {
+            Code = code;
+            Label = label;
+        }
+
+        public override string ToString()
+        {
+            return Label;
+        }
+    }
+}

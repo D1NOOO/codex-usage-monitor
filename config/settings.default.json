@@ -1,0 +1,23 @@
+{
+  "Language": "auto",
+  "Position": "bottom-left",
+  "RefreshSeconds": 60,
+  "Style": {
+    "Scale": 1.0,
+    "Opacity": 0.97,
+    "CornerRadius": 9,
+    "FontSize": 14,
+    "ResetFontSize": 11,
+    "FontFamily": "Microsoft YaHei UI",
+    "Background": "#F7F7F5",
+    "CardBackground": "#FFFFFF",
+    "Border": "#D8D8D4",
+    "Text": "#252525",
+    "MutedText": "#727272",
+    "Track": "#EAEAE7",
+    "Primary": "#4F8CFF",
+    "Secondary": "#8A63D2",
+    "Warning": "#E6A23C",
+    "Danger": "#E45757"
+  }
+}
