@@ -186,13 +186,17 @@ namespace CodexRateMonitorNative
                             ? "Remaining"
                             : "Used"),
                         snapshot.Primary == null
-                            ? 0
-                            : UsageDisplayTools.GetDisplayedPercent(
-                                snapshot.Primary.UsedPercent, settings.UsageDisplay),
+                            ? "--%"
+                            : UsageDisplayTools.FormatPercent(
+                                UsageDisplayTools.GetDisplayedPercent(
+                                    snapshot.Primary.UsedPercent, settings.UsageDisplay),
+                                settings.PercentDecimalPlaces),
                         snapshot.Secondary == null
-                            ? 0
-                            : UsageDisplayTools.GetDisplayedPercent(
-                                snapshot.Secondary.UsedPercent, settings.UsageDisplay)));
+                            ? "--%"
+                            : UsageDisplayTools.FormatPercent(
+                                UsageDisplayTools.GetDisplayedPercent(
+                                    snapshot.Secondary.UsedPercent, settings.UsageDisplay),
+                                settings.PercentDecimalPlaces)));
             });
         }
 
@@ -511,12 +515,12 @@ namespace CodexRateMonitorNative
 
             WindowUsage usage = snapshot == null ? null : (primary ? snapshot.Primary : snapshot.Secondary);
             string label = primary ? I18n.T("FiveHour") : I18n.T("SevenDay");
-            float value = usage == null
-                ? 0f
+            double value = usage == null
+                ? 0d
                 : UsageDisplayTools.GetDisplayedPercent(
                     usage.UsedPercent, settings.UsageDisplay);
             string percent = usage == null ? "--%" :
-                Math.Round(value).ToString(CultureInfo.InvariantCulture) + "%";
+                UsageDisplayTools.FormatPercent(value, settings.PercentDecimalPlaces);
             string reset = usage == null ? (status ?? I18n.T("Connecting")) : FormatReset(usage.ResetsAt);
 
             FontFamily family;
@@ -562,7 +566,11 @@ namespace CodexRateMonitorNative
                 g.FillRectangle(trackBrush, trackRect);
             using (var progressBrush = new SolidBrush(progress))
                 g.FillRectangle(progressBrush,
-                    new RectangleF(trackRect.X, trackRect.Y, trackRect.Width * value / 100f, trackRect.Height));
+                    new RectangleF(
+                        trackRect.X,
+                        trackRect.Y,
+                        trackRect.Width * (float)value / 100f,
+                        trackRect.Height));
         }
 
         private static string FormatReset(long? unixSeconds)
@@ -1073,6 +1081,7 @@ namespace CodexRateMonitorNative
         public string Language { get; set; }
         public string Position { get; set; }
         public string UsageDisplay { get; set; }
+        public int PercentDecimalPlaces { get; set; }
         public int RefreshSeconds { get; set; }
         public StyleSettings Style { get; set; }
 
@@ -1081,6 +1090,7 @@ namespace CodexRateMonitorNative
             Language = "auto";
             Position = "bottom-left";
             UsageDisplay = "remaining";
+            PercentDecimalPlaces = 0;
             RefreshSeconds = 60;
             Style = new StyleSettings();
         }
@@ -1128,6 +1138,7 @@ namespace CodexRateMonitorNative
             clone.Language = Language;
             clone.Position = Position;
             clone.UsageDisplay = UsageDisplay;
+            clone.PercentDecimalPlaces = PercentDecimalPlaces;
             clone.RefreshSeconds = RefreshSeconds;
             clone.Style = Style == null ? new StyleSettings() : Style.Clone();
             clone.Normalize();
@@ -1140,6 +1151,7 @@ namespace CodexRateMonitorNative
             if (Position != "top" && Position != "bottom-left")
                 Position = "top";
             UsageDisplay = UsageDisplayTools.Normalize(UsageDisplay);
+            PercentDecimalPlaces = PercentDecimalPlaces == 1 ? 1 : 0;
             RefreshSeconds = Math.Max(30, Math.Min(900, RefreshSeconds));
             if (Style == null)
                 Style = new StyleSettings();
@@ -1258,14 +1270,21 @@ namespace CodexRateMonitorNative
             return Normalize(value) == "remaining";
         }
 
-        public static float GetDisplayedPercent(double usedPercent, string mode)
+        public static double GetDisplayedPercent(double usedPercent, string mode)
         {
-            float used = (float)Math.Max(0, Math.Min(100, usedPercent));
-            return IsRemaining(mode) ? 100f - used : used;
+            double used = Math.Max(0, Math.Min(100, usedPercent));
+            return IsRemaining(mode) ? 100d - used : used;
+        }
+
+        public static string FormatPercent(double value, int decimalPlaces)
+        {
+            int places = decimalPlaces == 1 ? 1 : 0;
+            double rounded = Math.Round(value, places, MidpointRounding.AwayFromZero);
+            return rounded.ToString(places == 1 ? "0.0" : "0", CultureInfo.InvariantCulture) + "%";
         }
 
         public static Color GetProgressColor(
-            float displayedPercent,
+            double displayedPercent,
             string mode,
             Color normal,
             Color warning,

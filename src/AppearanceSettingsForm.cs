@@ -24,6 +24,8 @@ namespace CodexRateMonitorNative
         private readonly RadioButton topPosition;
         private readonly RadioButton showRemaining;
         private readonly RadioButton showUsed;
+        private readonly RadioButton wholePercent;
+        private readonly RadioButton oneDecimal;
         private readonly ComboBox language;
         private readonly ComboBox fontFamily;
         private readonly NumericUpDown fontSize;
@@ -50,26 +52,26 @@ namespace CodexRateMonitorNative
             MaximizeBox = false;
             MinimizeBox = false;
             ShowInTaskbar = true;
+            AutoScaleMode = AutoScaleMode.None;
             ClientSize = new Size(820, 790);
             MinimumSize = new Size(760, 720);
-            AutoScaleMode = AutoScaleMode.Dpi;
             Font = CreateUiFont(9.5f);
             BackColor = Color.FromArgb(246, 247, 249);
 
             var root = new TableLayoutPanel();
             root.Dock = DockStyle.Fill;
-            root.AutoScroll = true;
+            root.AutoScroll = false;
             root.Padding = new Padding(20, 16, 20, 14);
             root.ColumnCount = 1;
             root.RowCount = 7;
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 68));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 132));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 96));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 190));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 230));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 104));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 184));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 180));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
             Controls.Add(root);
 
             root.Controls.Add(BuildHeader(), 0, 0);
@@ -82,7 +84,7 @@ namespace CodexRateMonitorNative
             bottomPosition = new RadioButton();
             bottomPosition.Text = I18n.T("BottomRecommended");
             bottomPosition.AutoSize = true;
-            bottomPosition.Margin = new Padding(12, 4, 28, 0);
+            bottomPosition.Margin = new Padding(4, 4, 18, 0);
             bottomPosition.CheckedChanged += ControlChanged;
 
             topPosition = new RadioButton();
@@ -94,7 +96,7 @@ namespace CodexRateMonitorNative
             showRemaining = new RadioButton();
             showRemaining.Text = I18n.T("ShowRemaining");
             showRemaining.AutoSize = true;
-            showRemaining.Margin = new Padding(12, 3, 24, 0);
+            showRemaining.Margin = new Padding(4, 3, 18, 0);
             showRemaining.CheckedChanged += ControlChanged;
 
             showUsed = new RadioButton();
@@ -102,6 +104,18 @@ namespace CodexRateMonitorNative
             showUsed.AutoSize = true;
             showUsed.Margin = new Padding(0, 3, 0, 0);
             showUsed.CheckedChanged += ControlChanged;
+
+            wholePercent = new RadioButton();
+            wholePercent.Text = I18n.T("WholePercent");
+            wholePercent.AutoSize = true;
+            wholePercent.Margin = new Padding(6, 3, 12, 0);
+            wholePercent.CheckedChanged += ControlChanged;
+
+            oneDecimal = new RadioButton();
+            oneDecimal.Text = I18n.T("OneDecimal");
+            oneDecimal.AutoSize = true;
+            oneDecimal.Margin = new Padding(0, 3, 0, 0);
+            oneDecimal.CheckedChanged += ControlChanged;
 
             language = new ComboBox();
             language.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -116,38 +130,65 @@ namespace CodexRateMonitorNative
             var languageLabel = new Label();
             languageLabel.Text = I18n.T("Language");
             languageLabel.AutoSize = true;
-            languageLabel.Margin = new Padding(24, 7, 0, 0);
+            languageLabel.Margin = new Padding(4, 7, 0, 0);
 
             var positionGroup = CreateGroup(I18n.T("DisplaySettings"));
             var displayLayout = new TableLayoutPanel();
             displayLayout.Dock = DockStyle.Fill;
-            displayLayout.ColumnCount = 1;
+            displayLayout.Padding = new Padding(2, 2, 2, 0);
+            displayLayout.ColumnCount = 3;
             displayLayout.RowCount = 2;
-            displayLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            displayLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
+            displayLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
+            displayLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
             displayLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
             displayLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+
+            var positionLabel = new Label();
+            positionLabel.Text = I18n.T("DisplayPosition");
+            positionLabel.Dock = DockStyle.Fill;
+            positionLabel.TextAlign = ContentAlignment.MiddleRight;
+            displayLayout.Controls.Add(positionLabel, 0, 0);
 
             var positionFlow = new FlowLayoutPanel();
             positionFlow.Dock = DockStyle.Fill;
             positionFlow.WrapContents = false;
             positionFlow.Controls.Add(bottomPosition);
             positionFlow.Controls.Add(topPosition);
-            positionFlow.Controls.Add(languageLabel);
-            positionFlow.Controls.Add(language);
-            displayLayout.Controls.Add(positionFlow, 0, 0);
+            displayLayout.Controls.Add(positionFlow, 1, 0);
+
+            var languageFlow = new FlowLayoutPanel();
+            languageFlow.Dock = DockStyle.Fill;
+            languageFlow.WrapContents = false;
+            languageFlow.Controls.Add(languageLabel);
+            languageFlow.Controls.Add(language);
+            displayLayout.Controls.Add(languageFlow, 2, 0);
 
             var progressLabel = new Label();
             progressLabel.Text = I18n.T("ProgressDisplay");
-            progressLabel.AutoSize = true;
-            progressLabel.Margin = new Padding(12, 6, 0, 0);
+            progressLabel.Dock = DockStyle.Fill;
+            progressLabel.TextAlign = ContentAlignment.MiddleRight;
+            displayLayout.Controls.Add(progressLabel, 0, 1);
 
             var progressFlow = new FlowLayoutPanel();
             progressFlow.Dock = DockStyle.Fill;
             progressFlow.WrapContents = false;
-            progressFlow.Controls.Add(progressLabel);
             progressFlow.Controls.Add(showRemaining);
             progressFlow.Controls.Add(showUsed);
-            displayLayout.Controls.Add(progressFlow, 0, 1);
+            displayLayout.Controls.Add(progressFlow, 1, 1);
+
+            var precisionLabel = new Label();
+            precisionLabel.Text = I18n.T("PercentagePrecision");
+            precisionLabel.AutoSize = true;
+            precisionLabel.Margin = new Padding(4, 6, 0, 0);
+
+            var precisionFlow = new FlowLayoutPanel();
+            precisionFlow.Dock = DockStyle.Fill;
+            precisionFlow.WrapContents = false;
+            precisionFlow.Controls.Add(precisionLabel);
+            precisionFlow.Controls.Add(wholePercent);
+            precisionFlow.Controls.Add(oneDecimal);
+            displayLayout.Controls.Add(precisionFlow, 2, 1);
 
             positionGroup.Controls.Add(displayLayout);
             root.Controls.Add(positionGroup, 0, 2);
@@ -290,7 +331,7 @@ namespace CodexRateMonitorNative
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             for (int i = 0; i < 4; i++)
-                table.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+                table.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
 
             AddField(table, 0, 0, I18n.T("Font"), fontFamily);
             AddField(table, 0, 1, I18n.T("MainFontSize"), fontSize);
@@ -349,14 +390,14 @@ namespace CodexRateMonitorNative
 
             var grid = new TableLayoutPanel();
             grid.Dock = DockStyle.Top;
-            grid.Height = 88;
+            grid.Height = 84;
             grid.Padding = new Padding(4, 4, 4, 0);
             grid.ColumnCount = 5;
             grid.RowCount = 2;
             for (int i = 0; i < 5; i++)
                 grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
-            grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-            grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+            grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+            grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
 
             AddColorPicker(grid, 0, 0, I18n.T("OuterBackground"), "Background");
             AddColorPicker(grid, 1, 0, I18n.T("RowBackground"), "CardBackground");
@@ -372,7 +413,7 @@ namespace CodexRateMonitorNative
 
             var presets = new FlowLayoutPanel();
             presets.Dock = DockStyle.Bottom;
-            presets.Height = 34;
+            presets.Height = 32;
             presets.FlowDirection = FlowDirection.RightToLeft;
             presets.WrapContents = false;
             var dark = CreateSecondaryButton(I18n.T("DarkPreset"));
@@ -476,6 +517,8 @@ namespace CodexRateMonitorNative
                 topPosition.Checked = working.Position == "top";
                 showRemaining.Checked = UsageDisplayTools.IsRemaining(working.UsageDisplay);
                 showUsed.Checked = !UsageDisplayTools.IsRemaining(working.UsageDisplay);
+                wholePercent.Checked = working.PercentDecimalPlaces == 0;
+                oneDecimal.Checked = working.PercentDecimalPlaces == 1;
                 string languageCode = I18n.NormalizeSetting(working.Language);
                 for (int i = 0; i < language.Items.Count; i++)
                 {
@@ -520,6 +563,7 @@ namespace CodexRateMonitorNative
         {
             working.Position = bottomPosition.Checked ? "bottom-left" : "top";
             working.UsageDisplay = showUsed.Checked ? "used" : "remaining";
+            working.PercentDecimalPlaces = oneDecimal.Checked ? 1 : 0;
             var selectedLanguage = language.SelectedItem as LanguageOption;
             working.Language = selectedLanguage == null ? "auto" : selectedLanguage.Code;
             working.Style.FontFamily = string.IsNullOrWhiteSpace(fontFamily.Text)
@@ -761,9 +805,10 @@ namespace CodexRateMonitorNative
             try { family = new FontFamily(style.FontFamily); }
             catch { family = SystemFonts.MessageBoxFont.FontFamily; }
 
-            float value = UsageDisplayTools.GetDisplayedPercent(
+            double value = UsageDisplayTools.GetDisplayedPercent(
                 usedPercent, settings.UsageDisplay);
-            string percent = Math.Round(value).ToString(CultureInfo.InvariantCulture) + "%";
+            string percent = UsageDisplayTools.FormatPercent(
+                value, settings.PercentDecimalPlaces);
             float mainSize = (float)style.FontSize;
             float resetSize = (float)style.ResetFontSize;
             using (family)
@@ -794,7 +839,11 @@ namespace CodexRateMonitorNative
                 ColorTools.Parse(style.Danger));
             using (var progressBrush = new SolidBrush(progress))
                 g.FillRectangle(progressBrush,
-                    new RectangleF(track.X, track.Y, track.Width * value / 100f, track.Height));
+                    new RectangleF(
+                        track.X,
+                        track.Y,
+                        track.Width * (float)value / 100f,
+                        track.Height));
         }
 
         private string FormatReset(DateTime time)

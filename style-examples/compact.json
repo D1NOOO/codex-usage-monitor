@@ -2,6 +2,7 @@
   "language": "auto",
   "position": "bottom-left",
   "usageDisplay": "remaining",
+  "percentDecimalPlaces": 0,
   "refreshSeconds": 60,
   "style": {
     "scale": 0.82,
