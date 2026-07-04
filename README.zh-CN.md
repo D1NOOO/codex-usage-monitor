@@ -7,7 +7,7 @@
 **简体中文** · [繁體中文](README.zh-TW.md) · [English](README.md)
 
 一个原生 Windows 托盘小工具，在 Codex App 旁显示当前 5 小时窗口和
-7 天窗口的已用百分比及本地重置时间。
+7 天窗口的剩余或已用百分比及本地重置时间。
 
 > [!IMPORTANT]
 > 这是非官方社区项目，与 OpenAI 无隶属、背书或支持关系。
@@ -17,7 +17,8 @@
 
 ## 功能
 
-- 显示 5 小时与 7 天窗口的用量和本地重置时间。
+- 默认显示 5 小时与 7 天窗口的剩余百分比，也可切换为显示已用。
+- 进度条长度及警告/危险颜色会随显示模式同步变化。
 - 支持左下角头像右侧、顶部标题栏两种位置。
 - 原生 GUI EXE，无 CMD、Node 或 PowerShell 包装窗口。
 - 悬浮条不抢焦点，鼠标点击会穿透到 Codex。
@@ -127,6 +128,7 @@ Release 中的 `settings.json` 来自隐私安全的
 |---|---|
 | `Language` | `auto`、`zh-CN`、`zh-TW`、`en` |
 | `Position` | `bottom-left`、`top` |
+| `UsageDisplay` | `remaining`（默认）、`used` |
 | `RefreshSeconds` | 30–900 |
 | `Style.Scale` | 0.75–1.50 |
 | `Style.Opacity` | 0.50–1.00 |

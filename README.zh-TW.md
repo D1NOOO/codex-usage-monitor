@@ -7,7 +7,7 @@
 [简体中文](README.zh-CN.md) · **繁體中文** · [English](README.md)
 
 一個原生 Windows 通知區域小工具，在 Codex App 旁顯示目前 5 小時視窗與
-7 天視窗的已用百分比及本機重設時間。
+7 天視窗的剩餘或已用百分比及本機重設時間。
 
 > [!IMPORTANT]
 > 這是非官方社群專案，與 OpenAI 無隸屬、背書或支援關係。
@@ -17,7 +17,8 @@
 
 ## 功能
 
-- 顯示 5 小時與 7 天視窗的用量及本機重設時間。
+- 預設顯示 5 小時與 7 天視窗的剩餘百分比，也可切換為顯示已用。
+- 進度列長度及警告／危險顏色會隨顯示模式同步變化。
 - 支援左下角頭像右側、頂部標題列兩種位置。
 - 原生 GUI EXE，沒有 CMD、Node 或 PowerShell 包裝視窗。
 - 浮動列不搶焦點，滑鼠點擊會穿透到 Codex。
@@ -127,6 +128,7 @@ Release 中的 `settings.json` 來自隱私安全的
 |---|---|
 | `Language` | `auto`、`zh-CN`、`zh-TW`、`en` |
 | `Position` | `bottom-left`、`top` |
+| `UsageDisplay` | `remaining`（預設）、`used` |
 | `RefreshSeconds` | 30–900 |
 | `Style.Scale` | 0.75–1.50 |
 | `Style.Opacity` | 0.50–1.00 |

@@ -18,7 +18,8 @@ A small, native Windows tray utility that displays the current Codex
 
 ## Features
 
-- Shows used percentage and local reset time for the 5-hour and 7-day windows.
+- Shows remaining percentage by default, or used percentage when selected.
+- Progress length and warning/danger colors follow the selected percentage mode.
 - Two overlay positions:
   - bottom-left, beside the profile area;
   - centered in the top title bar.
@@ -168,6 +169,7 @@ Important fields:
 |---|---|
 | `Language` | `auto`, `zh-CN`, `zh-TW`, `en` |
 | `Position` | `bottom-left`, `top` |
+| `UsageDisplay` | `remaining` (default), `used` |
 | `RefreshSeconds` | 30–900 |
 | `Style.Scale` | 0.75–1.50 |
 | `Style.Opacity` | 0.50–1.00 |

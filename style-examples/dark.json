@@ -1,6 +1,7 @@
 {
   "language": "auto",
   "position": "bottom-left",
+  "usageDisplay": "remaining",
   "refreshSeconds": 60,
   "style": {
     "scale": 1.0,

@@ -22,6 +22,8 @@ namespace CodexRateMonitorNative
         private readonly OverlayPreviewControl preview;
         private readonly RadioButton bottomPosition;
         private readonly RadioButton topPosition;
+        private readonly RadioButton showRemaining;
+        private readonly RadioButton showUsed;
         private readonly ComboBox language;
         private readonly ComboBox fontFamily;
         private readonly NumericUpDown fontSize;
@@ -63,7 +65,7 @@ namespace CodexRateMonitorNative
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 68));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 132));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 96));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 190));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 230));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
@@ -89,6 +91,18 @@ namespace CodexRateMonitorNative
             topPosition.Margin = new Padding(0, 4, 0, 0);
             topPosition.CheckedChanged += ControlChanged;
 
+            showRemaining = new RadioButton();
+            showRemaining.Text = I18n.T("ShowRemaining");
+            showRemaining.AutoSize = true;
+            showRemaining.Margin = new Padding(12, 3, 24, 0);
+            showRemaining.CheckedChanged += ControlChanged;
+
+            showUsed = new RadioButton();
+            showUsed.Text = I18n.T("ShowUsed");
+            showUsed.AutoSize = true;
+            showUsed.Margin = new Padding(0, 3, 0, 0);
+            showUsed.CheckedChanged += ControlChanged;
+
             language = new ComboBox();
             language.DropDownStyle = ComboBoxStyle.DropDownList;
             language.Width = 142;
@@ -104,7 +118,15 @@ namespace CodexRateMonitorNative
             languageLabel.AutoSize = true;
             languageLabel.Margin = new Padding(24, 7, 0, 0);
 
-            var positionGroup = CreateGroup(I18n.T("DisplayPosition"));
+            var positionGroup = CreateGroup(I18n.T("DisplaySettings"));
+            var displayLayout = new TableLayoutPanel();
+            displayLayout.Dock = DockStyle.Fill;
+            displayLayout.ColumnCount = 1;
+            displayLayout.RowCount = 2;
+            displayLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            displayLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            displayLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+
             var positionFlow = new FlowLayoutPanel();
             positionFlow.Dock = DockStyle.Fill;
             positionFlow.WrapContents = false;
@@ -112,7 +134,22 @@ namespace CodexRateMonitorNative
             positionFlow.Controls.Add(topPosition);
             positionFlow.Controls.Add(languageLabel);
             positionFlow.Controls.Add(language);
-            positionGroup.Controls.Add(positionFlow);
+            displayLayout.Controls.Add(positionFlow, 0, 0);
+
+            var progressLabel = new Label();
+            progressLabel.Text = I18n.T("ProgressDisplay");
+            progressLabel.AutoSize = true;
+            progressLabel.Margin = new Padding(12, 6, 0, 0);
+
+            var progressFlow = new FlowLayoutPanel();
+            progressFlow.Dock = DockStyle.Fill;
+            progressFlow.WrapContents = false;
+            progressFlow.Controls.Add(progressLabel);
+            progressFlow.Controls.Add(showRemaining);
+            progressFlow.Controls.Add(showUsed);
+            displayLayout.Controls.Add(progressFlow, 0, 1);
+
+            positionGroup.Controls.Add(displayLayout);
             root.Controls.Add(positionGroup, 0, 2);
 
             fontFamily = new ComboBox();
@@ -437,6 +474,8 @@ namespace CodexRateMonitorNative
             {
                 bottomPosition.Checked = working.Position == "bottom-left";
                 topPosition.Checked = working.Position == "top";
+                showRemaining.Checked = UsageDisplayTools.IsRemaining(working.UsageDisplay);
+                showUsed.Checked = !UsageDisplayTools.IsRemaining(working.UsageDisplay);
                 string languageCode = I18n.NormalizeSetting(working.Language);
                 for (int i = 0; i < language.Items.Count; i++)
                 {
@@ -480,6 +519,7 @@ namespace CodexRateMonitorNative
         private void UpdateWorking()
         {
             working.Position = bottomPosition.Checked ? "bottom-left" : "top";
+            working.UsageDisplay = showUsed.Checked ? "used" : "remaining";
             var selectedLanguage = language.SelectedItem as LanguageOption;
             working.Language = selectedLanguage == null ? "auto" : selectedLanguage.Code;
             working.Style.FontFamily = string.IsNullOrWhiteSpace(fontFamily.Text)
@@ -685,20 +725,20 @@ namespace CodexRateMonitorNative
             if (settings.Position == "bottom-left")
             {
                 DrawRow(g, new RectangleF(3, 3, 178, 27),
-                    I18n.Translate("FiveHour", settings.Language), "35%",
-                    FormatReset(fiveReset), style.Primary, card, true);
+                    I18n.Translate("FiveHour", settings.Language), 35f,
+                    FormatReset(fiveReset), card, true);
                 DrawRow(g, new RectangleF(3, 32, 178, 27),
-                    I18n.Translate("SevenDay", settings.Language), "5%",
-                    FormatReset(sevenReset), style.Secondary, card, false);
+                    I18n.Translate("SevenDay", settings.Language), 5f,
+                    FormatReset(sevenReset), card, false);
             }
             else
             {
                 DrawRow(g, new RectangleF(5, 5, 228, 30),
-                    I18n.Translate("FiveHour", settings.Language), "35%",
-                    FormatReset(fiveReset), style.Primary, card, true);
+                    I18n.Translate("FiveHour", settings.Language), 35f,
+                    FormatReset(fiveReset), card, true);
                 DrawRow(g, new RectangleF(237, 5, 228, 30),
-                    I18n.Translate("SevenDay", settings.Language), "5%",
-                    FormatReset(sevenReset), style.Secondary, card, false);
+                    I18n.Translate("SevenDay", settings.Language), 5f,
+                    FormatReset(sevenReset), card, false);
             }
         }
 
@@ -706,9 +746,8 @@ namespace CodexRateMonitorNative
             Graphics g,
             RectangleF bounds,
             string label,
-            string percent,
+            float usedPercent,
             string reset,
-            string progressColor,
             Color card,
             bool primary)
         {
@@ -722,6 +761,9 @@ namespace CodexRateMonitorNative
             try { family = new FontFamily(style.FontFamily); }
             catch { family = SystemFonts.MessageBoxFont.FontFamily; }
 
+            float value = UsageDisplayTools.GetDisplayedPercent(
+                usedPercent, settings.UsageDisplay);
+            string percent = Math.Round(value).ToString(CultureInfo.InvariantCulture) + "%";
             float mainSize = (float)style.FontSize;
             float resetSize = (float)style.ResetFontSize;
             using (family)
@@ -743,8 +785,14 @@ namespace CodexRateMonitorNative
             RectangleF track = new RectangleF(bounds.X + 7, bounds.Bottom - 4, bounds.Width - 14, 2);
             using (var trackBrush = new SolidBrush(ColorTools.Parse(style.Track)))
                 g.FillRectangle(trackBrush, track);
-            float value = primary ? 35f : 5f;
-            using (var progressBrush = new SolidBrush(ColorTools.Parse(progressColor)))
+            Color normal = ColorTools.Parse(primary ? style.Primary : style.Secondary);
+            Color progress = UsageDisplayTools.GetProgressColor(
+                value,
+                settings.UsageDisplay,
+                normal,
+                ColorTools.Parse(style.Warning),
+                ColorTools.Parse(style.Danger));
+            using (var progressBrush = new SolidBrush(progress))
                 g.FillRectangle(progressBrush,
                     new RectangleF(track.X, track.Y, track.Width * value / 100f, track.Height));
         }
