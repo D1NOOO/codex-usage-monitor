@@ -539,19 +539,14 @@ namespace CodexRateMonitorNative
             float mainFontSize = (float)settings.Style.FontSize;
             float resetFontSize = (float)settings.Style.ResetFontSize;
             using (family)
-            using (var labelFont = new Font(family, mainFontSize, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (var percentFont = new Font(
-                family,
-                mainFontSize + DrawingHelpers.PercentOpticalSizeOffset,
-                FontStyle.Bold,
-                GraphicsUnit.Pixel))
+            using (var mainFont = new Font(family, mainFontSize, FontStyle.Bold, GraphicsUnit.Pixel))
             using (var resetFont = new Font(family, resetFontSize, FontStyle.Regular, GraphicsUnit.Pixel))
             using (var textBrush = new SolidBrush(text))
             using (var mutedBrush = new SolidBrush(muted))
             {
                 DrawingHelpers.DrawUsageText(
                     g, bounds, label, percent, reset,
-                    labelFont, percentFont, resetFont, textBrush, mutedBrush);
+                    mainFont, resetFont, textBrush, mutedBrush);
             }
 
             Color normal = ColorTools.Parse(primary ? settings.Style.Primary : settings.Style.Secondary);
@@ -1481,7 +1476,7 @@ namespace CodexRateMonitorNative
             CornerRadius = 9;
             FontSize = 14;
             ResetFontSize = 13;
-            FontFamily = "Microsoft YaHei UI";
+            FontFamily = "Microsoft JhengHei UI";
             Background = "#F7F7F5";
             CardBackground = "#FFFFFF";
             Border = "#D8D8D4";
@@ -1502,7 +1497,7 @@ namespace CodexRateMonitorNative
             FontSize = Math.Max(10, Math.Min(22, FontSize));
             ResetFontSize = Math.Max(9, Math.Min(18, ResetFontSize));
             if (string.IsNullOrWhiteSpace(FontFamily))
-                FontFamily = "Microsoft YaHei UI";
+                FontFamily = "Microsoft JhengHei UI";
             Background = ColorTools.Normalize(Background, "#F7F7F5");
             CardBackground = ColorTools.Normalize(CardBackground, "#FFFFFF");
             Border = ColorTools.Normalize(Border, "#D8D8D4");
@@ -1604,16 +1599,13 @@ namespace CodexRateMonitorNative
 
     internal static class DrawingHelpers
     {
-        public const int BottomRightWidth = 184;
-        public const int BottomRightHeight = 66;
-
-        // Latin digits and '%' render optically smaller than CJK glyphs in common UI fonts.
-        public const float PercentOpticalSizeOffset = 1f;
+        public const int BottomRightWidth = 252;
+        public const int BottomRightHeight = 78;
 
         public static RectangleF GetBottomRightCardBounds(bool primary)
         {
-            // Six pixels between rows keeps the cards visually separate at 100–125% DPI.
-            return new RectangleF(3, primary ? 3 : 36, 178, 27);
+            // Six pixels between rows keeps larger user-selected fonts legible.
+            return new RectangleF(3, primary ? 3 : 42, 246, 33);
         }
 
         public static void DrawUsageText(
@@ -1622,8 +1614,7 @@ namespace CodexRateMonitorNative
             string label,
             string percent,
             string reset,
-            Font labelFont,
-            Font percentFont,
+            Font mainFont,
             Font resetFont,
             Brush textBrush,
             Brush mutedBrush)
@@ -1638,23 +1629,21 @@ namespace CodexRateMonitorNative
                 textFormat.FormatFlags |= StringFormatFlags.NoWrap |
                                           StringFormatFlags.MeasureTrailingSpaces;
 
-                // Reserve the bottom strip for the progress bar, then center every
-                // font cell on the same horizontal line. Optical size differences
-                // therefore grow equally upward and downward.
+                // Reserve the bottom strip for the progress bar, then center the
+                // main and reset font cells on the same horizontal line.
                 float centerLine = bounds.Top + (bounds.Height - 4f) / 2f;
-                float labelTop = centerLine - GetCellHeight(labelFont) / 2f;
-                float percentTop = centerLine - GetCellHeight(percentFont) / 2f;
+                float mainTop = centerLine - GetCellHeight(mainFont) / 2f;
                 float resetTop = centerLine - GetCellHeight(resetFont) / 2f;
 
                 float labelX = bounds.Left + leftPadding;
-                float labelWidth = MeasureTextWidth(graphics, label, labelFont, textFormat);
+                float labelWidth = MeasureTextWidth(graphics, label, mainFont, textFormat);
                 float percentX = labelX + labelWidth + labelGap;
-                float percentWidth = MeasureTextWidth(graphics, percent, percentFont, textFormat);
+                float percentWidth = MeasureTextWidth(graphics, percent, mainFont, textFormat);
 
-                graphics.DrawString(label, labelFont, textBrush,
-                    new PointF(labelX, labelTop), textFormat);
-                graphics.DrawString(percent, percentFont, textBrush,
-                    new PointF(percentX, percentTop), textFormat);
+                graphics.DrawString(label, mainFont, textBrush,
+                    new PointF(labelX, mainTop), textFormat);
+                graphics.DrawString(percent, mainFont, textBrush,
+                    new PointF(percentX, mainTop), textFormat);
 
                 float timeLeft = percentX + percentWidth + timeGap;
                 float timeRight = bounds.Right - rightPadding;

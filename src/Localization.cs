@@ -277,8 +277,7 @@ namespace CodexRateMonitorNative
             string language = ResolveLanguage(languageSetting);
             if (language == "en")
                 return value.ToString("MMM d HH:mm", CultureInfo.GetCultureInfo("en-US"));
-            return string.Format(CultureInfo.InvariantCulture,
-                "{0}月{1}日 {2:HH:mm}", value.Month, value.Day, value);
+            return value.ToString("M.d HH:mm", CultureInfo.InvariantCulture);
         }
     }
 

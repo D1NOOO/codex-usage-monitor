@@ -181,8 +181,8 @@ namespace CodexRateMonitorNative
                         StringComparer.OrdinalIgnoreCase);
                     string[] preferred =
                     {
-                        "Microsoft YaHei UI",
                         "Microsoft JhengHei UI",
+                        "Microsoft YaHei UI",
                         "Segoe UI",
                         "Arial",
                         "Calibri",
@@ -190,16 +190,16 @@ namespace CodexRateMonitorNative
                         "Times New Roman",
                         "SimSun"
                     };
-                    var added = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    foreach (string name in preferred)
-                    {
-                        if (installed.Contains(name) && added.Add(name))
-                            fontFamily.Items.Add(name);
-                    }
+                    var choices = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (string name in preferred.Where(installed.Contains))
+                        choices.Add(name);
                     if (!string.IsNullOrWhiteSpace(working.Style.FontFamily) &&
-                        installed.Contains(working.Style.FontFamily) &&
-                        added.Add(working.Style.FontFamily))
-                        fontFamily.Items.Add(working.Style.FontFamily);
+                        installed.Contains(working.Style.FontFamily))
+                        choices.Add(working.Style.FontFamily);
+                    foreach (string name in choices.OrderBy(
+                        delegate(string value) { return value; },
+                        StringComparer.OrdinalIgnoreCase))
+                        fontFamily.Items.Add(name);
                     if (fontFamily.Items.Count == 0)
                         fontFamily.Items.Add(SystemFonts.MessageBoxFont.FontFamily.Name);
                 }
@@ -538,7 +538,7 @@ namespace CodexRateMonitorNative
             var selectedLanguage = language.SelectedItem as LanguageOption;
             working.Language = selectedLanguage == null ? "auto" : selectedLanguage.Code;
             working.Style.FontFamily = string.IsNullOrWhiteSpace(fontFamily.Text)
-                ? "Microsoft YaHei UI"
+                ? "Microsoft JhengHei UI"
                 : fontFamily.Text.Trim();
             working.Style.FontSize = (double)fontSize.Value;
             working.Style.ResetFontSize = (double)resetFontSize.Value;
@@ -660,7 +660,7 @@ namespace CodexRateMonitorNative
         {
             try
             {
-                return new Font("Microsoft YaHei UI", size, style, GraphicsUnit.Point);
+                return new Font("Microsoft JhengHei UI", size, style, GraphicsUnit.Point);
             }
             catch
             {
@@ -717,7 +717,7 @@ namespace CodexRateMonitorNative
             DrawOverlay(g, baseWidth, baseHeight);
             g.ResetTransform();
 
-            using (var font = new Font("Microsoft YaHei UI", 8.5f, FontStyle.Regular))
+            using (var font = new Font("Microsoft JhengHei UI", 8.5f, FontStyle.Regular))
             using (var brush = new SolidBrush(Color.FromArgb(103, 112, 123)))
                 g.DrawString(I18n.Translate("LivePreview", settings.Language), font, brush, 8, 6);
         }
@@ -787,18 +787,13 @@ namespace CodexRateMonitorNative
             float resetSize = (float)style.ResetFontSize;
             using (family)
             using (var main = new Font(family, mainSize, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (var percentFont = new Font(
-                family,
-                mainSize + DrawingHelpers.PercentOpticalSizeOffset,
-                FontStyle.Bold,
-                GraphicsUnit.Pixel))
             using (var resetFont = new Font(family, resetSize, FontStyle.Regular, GraphicsUnit.Pixel))
             using (var textBrush = new SolidBrush(ColorTools.Parse(style.Text)))
             using (var mutedBrush = new SolidBrush(ColorTools.Parse(style.MutedText)))
             {
                 DrawingHelpers.DrawUsageText(
                     g, bounds, label, percent, reset,
-                    main, percentFont, resetFont, textBrush, mutedBrush);
+                    main, resetFont, textBrush, mutedBrush);
             }
 
             RectangleF track = new RectangleF(bounds.X + 7, bounds.Bottom - 4, bounds.Width - 14, 2);
