@@ -6,12 +6,27 @@
 
 [简体中文](README.zh-CN.md) · **繁體中文** · [English](README.md)
 
-一個原生 Windows 通知區域小工具，在 Codex App 旁顯示目前 5 小時視窗與
+一個原生 Windows 通知區域小工具，在 ChatGPT 桌面版的 Codex 介面旁顯示目前 5 小時視窗與
 7 天視窗的剩餘或已用百分比及本機重設時間。
 
 > [!IMPORTANT]
 > 這是非官方社群專案，與 OpenAI 無隸屬、背書或支援關係。
-> `codex app-server` 是本機／實驗性協定，未來 Codex 版本可能調整。
+> `codex app-server` 是本機／實驗性協定，未來 ChatGPT 桌面版或 Codex 版本可能調整。
+
+## 快速使用
+
+1. 開啟 ChatGPT 桌面版，完成登入，並切到你要監視的 Codex 介面。
+   本工具只顯示 ChatGPT 帳戶訂閱側的用量視窗；API Key 或 API 登入方式不會暴露 Codex
+   的 5 小時 / 7 天視窗，因此無法透過本工具查看。
+2. 在解壓縮後的發布資料夾中執行 `CodexRateMonitor.exe`。程式沒有主視窗，會出現在
+   Windows 右下角通知區域，也可能先被收進 `^` 隱藏區域。
+3. 將 ChatGPT/Codex 視窗切到前景。浮動列只會在該視窗位於前景時顯示，切到其他應用程式時會自動隱藏。
+4. 右鍵通知區域圖示。**外觀設定** 是第一項，可在這裡調整位置、大小、顏色、透明度、語言和用量顯示模式。
+5. 點擊 **立即重新整理** 可強制讀取一次用量；選擇 **頂部標題列** 或 **左下角頭像右側** 可移動浮動列。
+   雙擊通知區域圖示也會開啟外觀設定。
+
+如果看起來「沒有啟動」，請先檢查通知區域的 `^` 隱藏區域，退出舊版監視器程序，再重新執行目前版本並把
+ChatGPT/Codex 切到前景。
 
 ![外觀設定](docs/appearance-settings-zh-cn.png)
 
@@ -21,7 +36,7 @@
 - 進度列長度及警告／危險顏色會隨顯示模式同步變化。
 - 支援左下角頭像右側、頂部標題列兩種位置。
 - 原生 GUI EXE，沒有 CMD、Node 或 PowerShell 包裝視窗。
-- 浮動列不搶焦點，滑鼠點擊會穿透到 Codex。
+- 浮動列不搶焦點，滑鼠點擊會穿透到 ChatGPT/Codex。
 - 完整外觀設定：字型、字級、縮放、透明度、圓角、顏色及淺色／深色預設。
 - 支援简体中文、繁體中文、English，可自動跟隨系統或手動選擇。
 - 可從通知區域啟用或停用開機啟動。
@@ -31,14 +46,18 @@
 
 - Windows 10/11
 - .NET Framework 4.8
-- 已安裝 Codex App，以及 Codex CLI 0.134.0（已驗證）或其他支援下列命令的
-  CLI 版本：
+- 已安裝支援 Codex 的 ChatGPT 桌面版；舊版 Codex App 仍相容。
+- 可用的原生 Codex 執行檔。程式會優先使用正在執行的 ChatGPT 桌面版內建執行檔，
+  然後回退到使用者 PATH 中支援下列命令的獨立 Codex CLI：
 
   ```powershell
   codex app-server
   ```
 
-- Codex 已正常登入，且能傳回用量視窗資料。
+- ChatGPT/Codex 已正常登入，且能傳回用量視窗資料。API Key 或 API 登入方式無法提供本工具顯示的
+  5 小時 / 7 天 Codex 用量視窗。
+- 使用者本機環境很重要：該機器必須能執行 `codex app-server`，而且它能讀取到與 ChatGPT
+  桌面版或 Codex CLI 相同的登入狀態。
 
 ## 安裝與使用
 
@@ -75,11 +94,21 @@
 flowchart LR
     UI["通知區域圖示 + 穿透式浮動列"] --> Client["AppServerClient"]
     Client -->|"stdin/stdout 上逐行 JSON"| Server["codex app-server"]
-    Server --> Auth["Codex 自行管理登入憑據"]
+    Server --> Auth["ChatGPT/Codex 自行管理登入憑據"]
     Server --> API["OpenAI 服務"]
 ```
 
-程式會找出 Codex CLI 的原生執行檔，然後直接啟動：
+浮動列會跟隨前景的 `ChatGPT.exe` 桌面視窗，同時仍識別舊版 `Codex.exe` 視窗。
+用量資料不是來自截圖、OCR 或 ChatGPT UI 內部介面，而是來自本機 Codex CLI 的 app-server
+協定。
+
+程式會依下列順序尋找可執行的 Codex 命令：
+
+1. ChatGPT 桌面版內建的 `resources\codex.exe`，前提是 Windows 允許外部程序直接執行它。
+2. npm/global 安裝的 Codex CLI 內部原生執行檔。
+3. 使用者 PATH 中的 `codex.exe`、`codex.cmd` 或 `codex.ps1`。
+
+然後直接啟動：
 
 ```text
 codex.exe app-server
@@ -95,7 +124,7 @@ codex.exe app-server
 程式將 `primary` 呈現為 5 小時視窗，將 `secondary` 呈現為 7 天視窗；
 同時合併 `account/rateLimits/updated` 的稀疏更新。
 
-登入、權杖更新及與 OpenAI 的網路通訊全部由 Codex 負責，本工具不實作驗證。
+登入、權杖更新及與 OpenAI 的網路通訊全部由 ChatGPT/Codex 負責，本工具不實作驗證。
 
 ## 隱私與安全
 
@@ -183,28 +212,43 @@ gh attestation verify CodexRateMonitor-VERSION-windows-x64.zip `
 
 ## 常見問題
 
-### 提示找不到 Codex CLI
+### 提示找不到 Codex 執行檔
+
+請先開啟或更新 ChatGPT 桌面版。如果你使用獨立 CLI，請開啟新的 PowerShell 視窗檢查：
 
 ```powershell
 codex --version
 codex app-server --help
 ```
 
-如果第二個命令無法使用，請更新或安裝 Codex CLI。
+如果 ChatGPT 桌面版沒有提供內建執行檔，且第二個命令無法使用，請更新或安裝 Codex CLI。
+
+`codex app-server --help` 只能證明命令存在，並不會讀取用量。排查登入狀態請執行：
+
+```powershell
+codex doctor
+```
+
+如果 Doctor 顯示 `stored auth mode api_key`，或沒有 stored ChatGPT tokens，CLI 就無法讀取
+ChatGPT/Codex 的 5 小時 / 7 天用量視窗。請先在 Codex CLI 或 ChatGPT 桌面版完成 ChatGPT
+帳戶登入，然後重試。
 
 ### 提示尚未登入
 
-請在 Codex App 或 CLI 正常登入。本工具不會接觸或代管憑據。
+請在 ChatGPT 桌面版的 Codex 介面或 CLI 正常登入。本工具不會接觸或代管憑據。
+
+如果浮動列提示需要 ChatGPT 帳戶登入，表示 app-server 已經啟動，但目前 Codex CLI 是 API Key
+登入狀態。API Key 可以用於模型呼叫，但不能返回 ChatGPT/Codex 訂閱用量視窗。
 
 ### 浮動列沒有顯示
 
-將 Codex 切到前景；確認通知區域圖示仍在；重新選擇位置並點擊「立即重新整理」。
+將 ChatGPT/Codex 視窗切到前景；確認通知區域圖示仍在；重新選擇位置並點擊「立即重新整理」。
 
 ## 已知限制
 
 - 僅支援 Windows。
 - 依賴 Codex 本機實驗性 app-server 協定。
-- 位置偏移配合目前 Codex 桌面版配置，Codex UI 更新後可能需要調整。
+- 位置偏移配合目前 ChatGPT 桌面版 Codex 配置和舊版 Codex 桌面版配置，UI 更新後可能需要調整。
 - Release EXE 尚未進行程式碼簽章。
 - 用量視窗的可用性和含義由 Codex／OpenAI 決定。
 

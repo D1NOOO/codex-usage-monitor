@@ -89,9 +89,9 @@ namespace CodexRateMonitorNative
         private ContextMenuStrip BuildTrayMenu()
         {
             var menu = new ContextMenuStrip();
+            menu.Items.Add(I18n.T("AppearanceMenu"), null, delegate { ShowAppearanceSettings(); });
             menu.Items.Add(I18n.T("RefreshNow"), null, delegate { RequestRateLimits(); });
             menu.Items.Add(I18n.T("ReloadStyle"), null, delegate { ReloadSettings(); });
-            menu.Items.Add(I18n.T("AppearanceMenu"), null, delegate { ShowAppearanceSettings(); });
             menu.Items.Add(new ToolStripSeparator());
             var topItem = new ToolStripMenuItem(I18n.T("TopPosition"));
             topItem.Click += delegate { SetPosition("top"); };
@@ -121,14 +121,13 @@ namespace CodexRateMonitorNative
 
         private void OnTimerTick(object sender, EventArgs e)
         {
-            IntPtr codexWindow = WindowLocator.FindCodexMainWindow();
-            bool codexIsForeground = codexWindow != IntPtr.Zero &&
-                                     !NativeMethods.IsIconic(codexWindow) &&
-                                     WindowLocator.IsCodexForeground();
+            IntPtr desktopWindow = WindowLocator.FindForegroundDesktopMainWindow();
+            bool desktopIsForeground = desktopWindow != IntPtr.Zero &&
+                                       !NativeMethods.IsIconic(desktopWindow);
 
-            if (codexIsForeground)
+            if (desktopIsForeground)
             {
-                overlay.AttachTo(codexWindow);
+                overlay.AttachTo(desktopWindow);
                 if (!appServer.IsRunning)
                     StartAppServer();
             }
@@ -162,7 +161,7 @@ namespace CodexRateMonitorNative
         {
             if (!appServer.IsRunning)
             {
-                if (WindowLocator.FindCodexMainWindow() != IntPtr.Zero)
+                if (WindowLocator.FindDesktopMainWindow() != IntPtr.Zero)
                     StartAppServer();
                 return;
             }
@@ -629,13 +628,36 @@ namespace CodexRateMonitorNative
                 process = null;
             }
 
-            string executable = NativeCodexResolver.Find();
-            if (string.IsNullOrEmpty(executable))
+            Exception lastError = null;
+            foreach (CodexExecutable candidate in NativeCodexResolver.FindCandidates())
+            {
+                try
+                {
+                    StartCandidate(candidate);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex;
+                    DisposeProcess();
+                }
+            }
+
+            if (lastError == null)
+                throw new FileNotFoundException(I18n.T("CliMissing"));
+
+            throw new InvalidOperationException(
+                I18n.T("CliMissing") + " " + lastError.Message, lastError);
+        }
+
+        private void StartCandidate(CodexExecutable candidate)
+        {
+            if (candidate == null || string.IsNullOrWhiteSpace(candidate.FileName))
                 throw new FileNotFoundException(I18n.T("CliMissing"));
 
             var startInfo = new ProcessStartInfo();
-            startInfo.FileName = executable;
-            startInfo.Arguments = "app-server";
+            startInfo.FileName = candidate.FileName;
+            startInfo.Arguments = candidate.Arguments;
             startInfo.UseShellExecute = false;
             startInfo.CreateNoWindow = true;
             startInfo.WindowStyle = ProcessWindowStyle.Hidden;
@@ -691,6 +713,7 @@ namespace CodexRateMonitorNative
             var message = new Dictionary<string, object>();
             message["method"] = "account/rateLimits/read";
             message["id"] = id;
+            message["params"] = new Dictionary<string, object>();
             Send(message);
         }
 
@@ -776,7 +799,7 @@ namespace CodexRateMonitorNative
             {
                 if (message.ContainsKey("error"))
                 {
-                    RaiseStatus(I18n.T("NotSignedIn"));
+                    RaiseStatus(GetRateLimitErrorStatus(message));
                     return;
                 }
                 var result = GetDictionary(message, "result");
@@ -790,8 +813,7 @@ namespace CodexRateMonitorNative
             if (method == "account/rateLimits/updated")
             {
                 var parameters = GetDictionary(message, "params");
-                var rateLimits = GetDictionary(parameters, "rateLimits");
-                RateSnapshot snapshot = ParseSnapshot(rateLimits);
+                RateSnapshot snapshot = ParseRateLimitsContainer(parameters);
                 if (snapshot != null)
                     RaiseSnapshot(snapshot);
             }
@@ -799,16 +821,62 @@ namespace CodexRateMonitorNative
 
         private RateSnapshot ParseReadResult(Dictionary<string, object> result)
         {
-            if (result == null)
+            return ParseRateLimitsContainer(result);
+        }
+
+        private static RateSnapshot ParseRateLimitsContainer(Dictionary<string, object> source)
+        {
+            if (source == null)
                 return null;
-            var byId = GetDictionary(result, "rateLimitsByLimitId");
-            if (byId != null)
+
+            RateSnapshot snapshot = ParseSnapshot(GetDictionary(source, "rateLimits"));
+            if (HasUsageWindow(snapshot))
+                return snapshot;
+
+            snapshot = ParseByLimitId(GetDictionary(source, "rateLimitsByLimitId"));
+            if (HasUsageWindow(snapshot))
+                return snapshot;
+
+            snapshot = ParseSnapshot(source);
+            if (HasUsageWindow(snapshot))
+                return snapshot;
+
+            return ParseByLimitId(source);
+        }
+
+        private static RateSnapshot ParseByLimitId(Dictionary<string, object> byId)
+        {
+            if (byId == null)
+                return null;
+
+            RateSnapshot snapshot = ParseSnapshot(GetDictionary(byId, "codex"));
+            if (HasUsageWindow(snapshot))
+                return snapshot;
+
+            foreach (object raw in byId.Values)
             {
-                var codex = GetDictionary(byId, "codex");
-                if (codex != null)
-                    return ParseSnapshot(codex);
+                snapshot = ParseSnapshot(raw as Dictionary<string, object>);
+                if (HasUsageWindow(snapshot))
+                    return snapshot;
             }
-            return ParseSnapshot(GetDictionary(result, "rateLimits"));
+
+            return null;
+        }
+
+        private static bool HasUsageWindow(RateSnapshot snapshot)
+        {
+            return snapshot != null && (snapshot.Primary != null || snapshot.Secondary != null);
+        }
+
+        private static string GetRateLimitErrorStatus(Dictionary<string, object> message)
+        {
+            var error = GetDictionary(message, "error");
+            string text = GetString(error, "message") ?? string.Empty;
+            if (text.IndexOf("chatgpt authentication required", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                text.IndexOf("api key auth is not supported", StringComparison.OrdinalIgnoreCase) >= 0)
+                return I18n.T("ChatGptAuthRequired");
+
+            return I18n.T("NotSignedIn");
         }
 
         private static RateSnapshot ParseSnapshot(Dictionary<string, object> source)
@@ -942,6 +1010,13 @@ namespace CodexRateMonitorNative
             disposed = true;
             IsInitialized = false;
 
+            DisposeProcess();
+        }
+
+        private void DisposeProcess()
+        {
+            IsInitialized = false;
+
             try
             {
                 if (process != null && !process.HasExited)
@@ -960,15 +1035,31 @@ namespace CodexRateMonitorNative
         }
     }
 
+    internal sealed class CodexExecutable
+    {
+        public string FileName { get; private set; }
+        public string Arguments { get; private set; }
+
+        public CodexExecutable(string fileName, string arguments)
+        {
+            FileName = fileName;
+            Arguments = arguments;
+        }
+    }
+
     internal static class NativeCodexResolver
     {
-        public static string Find()
+        public static IEnumerable<CodexExecutable> FindCandidates()
         {
+            string bundled = FindBundledInDesktopApp();
+            if (!string.IsNullOrEmpty(bundled))
+                yield return DirectExecutable(bundled);
+
             foreach (string directory in CandidatePathDirectories())
             {
                 string native = FindNativeUnderNpmDirectory(directory);
                 if (!string.IsNullOrEmpty(native))
-                    return native;
+                    yield return DirectExecutable(native);
             }
 
             foreach (string directory in CandidatePathDirectories())
@@ -976,7 +1067,96 @@ namespace CodexRateMonitorNative
                 string executable = Path.Combine(directory, "codex.exe");
                 if (File.Exists(executable) &&
                     executable.IndexOf(@"\WindowsApps\", StringComparison.OrdinalIgnoreCase) < 0)
-                    return executable;
+                    yield return DirectExecutable(executable);
+
+                string command = Path.Combine(directory, "codex.cmd");
+                if (File.Exists(command))
+                    yield return CmdWrapper(command);
+
+                string script = Path.Combine(directory, "codex.ps1");
+                if (File.Exists(script))
+                    yield return PowerShellWrapper(script);
+            }
+        }
+
+        private static CodexExecutable DirectExecutable(string path)
+        {
+            return new CodexExecutable(path, "app-server");
+        }
+
+        private static CodexExecutable CmdWrapper(string path)
+        {
+            return new CodexExecutable(
+                Environment.GetEnvironmentVariable("COMSPEC") ?? "cmd.exe",
+                "/d /c " + Quote(path) + " app-server");
+        }
+
+        private static CodexExecutable PowerShellWrapper(string path)
+        {
+            string powerShell = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.System),
+                "WindowsPowerShell",
+                "v1.0",
+                "powershell.exe");
+            if (!File.Exists(powerShell))
+                powerShell = "powershell.exe";
+
+            return new CodexExecutable(
+                powerShell,
+                "-NoProfile -ExecutionPolicy Bypass -File " + Quote(path) + " app-server");
+        }
+
+        private static string Quote(string value)
+        {
+            return "\"" + value.Replace("\"", "\\\"") + "\"";
+        }
+
+        private static string FindBundledInDesktopApp()
+        {
+            foreach (Process process in DesktopAppProcess.GetRunningProcesses())
+            {
+                try
+                {
+                    string path = process.MainModule == null ? null : process.MainModule.FileName;
+                    string executable = FindBundledNearExecutable(path);
+                    if (!string.IsNullOrEmpty(executable))
+                        return executable;
+                }
+                catch
+                {
+                }
+                finally
+                {
+                    process.Dispose();
+                }
+            }
+            return null;
+        }
+
+        private static string FindBundledNearExecutable(string desktopExecutable)
+        {
+            if (string.IsNullOrWhiteSpace(desktopExecutable))
+                return null;
+            string directory;
+            try
+            {
+                directory = Path.GetDirectoryName(desktopExecutable);
+            }
+            catch
+            {
+                return null;
+            }
+            if (string.IsNullOrEmpty(directory))
+                return null;
+
+            foreach (string candidate in new[]
+            {
+                Path.Combine(directory, "resources", "codex.exe"),
+                Path.Combine(directory, "codex.exe")
+            })
+            {
+                if (File.Exists(candidate))
+                    return candidate;
             }
 
             return null;
@@ -1024,59 +1204,131 @@ namespace CodexRateMonitorNative
         }
     }
 
-    internal static class WindowLocator
+    internal static class DesktopAppProcess
     {
-        public static IntPtr FindCodexMainWindow()
-        {
-            Process[] processes;
-            try
-            {
-                processes = Process.GetProcessesByName("Codex");
-            }
-            catch
-            {
-                return IntPtr.Zero;
-            }
+        private static readonly string[] ProcessNames = { "ChatGPT", "Codex" };
 
-            try
+        public static IEnumerable<Process> GetRunningProcesses()
+        {
+            foreach (string processName in ProcessNames)
             {
-                return processes
-                    .Where(delegate(Process process)
-                    {
-                        try { return process.MainWindowHandle != IntPtr.Zero; }
-                        catch { return false; }
-                    })
-                    .OrderBy(delegate(Process process)
-                    {
-                        try { return process.StartTime; }
-                        catch { return DateTime.MinValue; }
-                    })
-                    .Select(delegate(Process process) { return process.MainWindowHandle; })
-                    .LastOrDefault();
-            }
-            finally
-            {
+                Process[] processes;
+                try
+                {
+                    processes = Process.GetProcessesByName(processName);
+                }
+                catch
+                {
+                    continue;
+                }
+
                 foreach (Process process in processes)
-                    process.Dispose();
+                    yield return process;
             }
         }
 
-        public static bool IsCodexForeground()
+        public static bool IsDesktopAppProcess(Process process)
+        {
+            if (process == null)
+                return false;
+
+            string name;
+            try
+            {
+                name = process.ProcessName;
+            }
+            catch
+            {
+                return false;
+            }
+
+            if (string.Equals(name, "Codex", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            return string.Equals(name, "ChatGPT", StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    internal static class WindowLocator
+    {
+        public static IntPtr FindDesktopMainWindow()
+        {
+            Process selected = null;
+            try
+            {
+                foreach (Process process in DesktopAppProcess.GetRunningProcesses())
+                {
+                    bool candidate;
+                    try
+                    {
+                        candidate = DesktopAppProcess.IsDesktopAppProcess(process) &&
+                                    process.MainWindowHandle != IntPtr.Zero;
+                    }
+                    catch
+                    {
+                        candidate = false;
+                    }
+
+                    if (!candidate)
+                    {
+                        process.Dispose();
+                        continue;
+                    }
+
+                    if (selected == null || CompareStartTime(process, selected) > 0)
+                    {
+                        if (selected != null)
+                            selected.Dispose();
+                        selected = process;
+                    }
+                    else
+                    {
+                        process.Dispose();
+                    }
+                }
+
+                return selected == null ? IntPtr.Zero : selected.MainWindowHandle;
+            }
+            finally
+            {
+                if (selected != null)
+                    selected.Dispose();
+            }
+        }
+
+        public static IntPtr FindForegroundDesktopMainWindow()
         {
             IntPtr foreground = NativeMethods.GetForegroundWindow();
             if (foreground == IntPtr.Zero)
-                return false;
+                return IntPtr.Zero;
             uint processId;
             NativeMethods.GetWindowThreadProcessId(foreground, out processId);
             try
             {
                 using (Process process = Process.GetProcessById((int)processId))
-                    return string.Equals(process.ProcessName, "Codex", StringComparison.OrdinalIgnoreCase);
+                {
+                    if (!DesktopAppProcess.IsDesktopAppProcess(process))
+                        return IntPtr.Zero;
+                    return process.MainWindowHandle == IntPtr.Zero
+                        ? foreground
+                        : process.MainWindowHandle;
+                }
             }
             catch
             {
-                return false;
+                return IntPtr.Zero;
             }
+        }
+
+        private static int CompareStartTime(Process left, Process right)
+        {
+            DateTime leftStart;
+            DateTime rightStart;
+            try { leftStart = left.StartTime; }
+            catch { leftStart = DateTime.MinValue; }
+            try { rightStart = right.StartTime; }
+            catch { rightStart = DateTime.MinValue; }
+            return leftStart.CompareTo(rightStart);
         }
     }
 
