@@ -29,7 +29,7 @@ A small, native Windows tray utility that displays the current Codex
 4. Right-click the tray icon. **Appearance settings** is the first item; use it
    to change position, size, colors, opacity, language, and usage display mode.
 5. Use **Refresh now** to force a usage read, or select **Top title bar** /
-   **Bottom-left** to move the overlay. Double-clicking the tray icon also opens
+   **Bottom-right** to move the overlay. Double-clicking the tray icon also opens
    Appearance settings.
 
 If nothing appears, first check the tray overflow menu, exit any older monitor
@@ -43,7 +43,7 @@ instance, then start this build again and bring ChatGPT/Codex to the foreground.
 - Percentage precision can be a whole number or one decimal place.
 - Progress length and warning/danger colors follow the selected percentage mode.
 - Two overlay positions:
-  - bottom-left, beside the profile area;
+  - bottom-right;
   - centered in the top title bar.
 - Lives in the Windows notification area without a console window.
 - Click-through overlay: it does not steal focus or block ChatGPT/Codex controls.
@@ -104,7 +104,7 @@ Right-click the notification-area icon:
 | Reload style | Reloads `settings.json` from disk. |
 | Appearance settings | Opens the visual editor and live preview. |
 | Top title bar | Uses the compact horizontal overlay. |
-| Bottom-left | Uses the larger two-row overlay beside the profile area. |
+| Bottom-right | Uses the larger two-row overlay in the lower-right corner. |
 | Start with Windows | Adds/removes a current-user startup registry value. |
 | Exit | Stops the monitor and the app-server process it launched. |
 
@@ -211,7 +211,7 @@ Important fields:
 | Field | Values |
 |---|---|
 | `Language` | `auto`, `zh-CN`, `zh-TW`, `en` |
-| `Position` | `bottom-left`, `top` |
+| `Position` | `bottom-right`, `top` (`bottom-left` is migrated automatically) |
 | `UsageDisplay` | `remaining` (default), `used` |
 | `RefreshSeconds` | 30–900 |
 | `Style.Scale` | 0.75–1.50 |

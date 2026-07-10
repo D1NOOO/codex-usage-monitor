@@ -487,7 +487,7 @@ namespace CodexRateMonitorNative
             loading = true;
             try
             {
-                bottomPosition.Checked = working.Position == "bottom-left";
+                bottomPosition.Checked = working.Position == "bottom-right";
                 topPosition.Checked = working.Position == "top";
                 showRemaining.Checked = UsageDisplayTools.IsRemaining(working.UsageDisplay);
                 showUsed.Checked = !UsageDisplayTools.IsRemaining(working.UsageDisplay);
@@ -533,7 +533,7 @@ namespace CodexRateMonitorNative
 
         private void UpdateWorking()
         {
-            working.Position = bottomPosition.Checked ? "bottom-left" : "top";
+            working.Position = bottomPosition.Checked ? "bottom-right" : "top";
             working.UsageDisplay = showUsed.Checked ? "used" : "remaining";
             var selectedLanguage = language.SelectedItem as LanguageOption;
             working.Language = selectedLanguage == null ? "auto" : selectedLanguage.Code;
@@ -699,11 +699,11 @@ namespace CodexRateMonitorNative
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
 
-            int baseWidth = settings.Position == "bottom-left"
-                ? DrawingHelpers.BottomLeftWidth
+            int baseWidth = settings.Position == "bottom-right"
+                ? DrawingHelpers.BottomRightWidth
                 : 470;
-            int baseHeight = settings.Position == "bottom-left"
-                ? DrawingHelpers.BottomLeftHeight
+            int baseHeight = settings.Position == "bottom-right"
+                ? DrawingHelpers.BottomRightHeight
                 : 40;
             float fit = Math.Min(
                 (ClientSize.Width - 28f) / baseWidth,
@@ -741,12 +741,12 @@ namespace CodexRateMonitorNative
 
             DateTime fiveReset = DateTime.Today.AddDays(1).AddHours(3).AddMinutes(25);
             DateTime sevenReset = DateTime.Today.AddDays(7).AddHours(22).AddMinutes(25);
-            if (settings.Position == "bottom-left")
+            if (settings.Position == "bottom-right")
             {
-                DrawRow(g, DrawingHelpers.GetBottomLeftCardBounds(true),
+                DrawRow(g, DrawingHelpers.GetBottomRightCardBounds(true),
                     I18n.Translate("FiveHour", settings.Language), 35f,
                     FormatReset(fiveReset), card, true);
-                DrawRow(g, DrawingHelpers.GetBottomLeftCardBounds(false),
+                DrawRow(g, DrawingHelpers.GetBottomRightCardBounds(false),
                     I18n.Translate("SevenDay", settings.Language), 5f,
                     FormatReset(sevenReset), card, false);
             }

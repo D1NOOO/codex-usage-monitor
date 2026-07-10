@@ -1,6 +1,6 @@
 {
   "Language": "auto",
-  "Position": "bottom-left",
+  "Position": "bottom-right",
   "UsageDisplay": "remaining",
   "RefreshSeconds": 60,
   "Style": {

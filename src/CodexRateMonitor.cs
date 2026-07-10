@@ -97,7 +97,7 @@ namespace CodexRateMonitorNative
             topItem.Click += delegate { SetPosition("top"); };
             menu.Items.Add(topItem);
             var bottomItem = new ToolStripMenuItem(I18n.T("BottomPosition"));
-            bottomItem.Click += delegate { SetPosition("bottom-left"); };
+            bottomItem.Click += delegate { SetPosition("bottom-right"); };
             menu.Items.Add(bottomItem);
             menu.Items.Add(new ToolStripSeparator());
             startupItem = new ToolStripMenuItem(I18n.T("Startup"));
@@ -379,10 +379,10 @@ namespace CodexRateMonitorNative
             settings = value;
             Opacity = settings.Style.Opacity;
             int width = (int)Math.Round(
-                (settings.Position == "bottom-left" ? DrawingHelpers.BottomLeftWidth : 470) *
+                (settings.Position == "bottom-right" ? DrawingHelpers.BottomRightWidth : 470) *
                 settings.Style.Scale);
             int height = (int)Math.Round(
-                (settings.Position == "bottom-left" ? DrawingHelpers.BottomLeftHeight : 40) *
+                (settings.Position == "bottom-right" ? DrawingHelpers.BottomRightHeight : 40) *
                 settings.Style.Scale);
             Size = new Size(width, height);
             UpdateRegion();
@@ -423,10 +423,10 @@ namespace CodexRateMonitorNative
 
             int x;
             int y;
-            if (settings.Position == "bottom-left")
+            if (settings.Position == "bottom-right")
             {
-                x = rect.Left + 112;
-                y = rect.Bottom - Height - 4;
+                x = rect.Right - Width - 12;
+                y = rect.Bottom - Height - 12;
             }
             else
             {
@@ -488,11 +488,11 @@ namespace CodexRateMonitorNative
                 g.DrawPath(borderPen, outerPath);
             }
 
-            if (settings.Position == "bottom-left")
+            if (settings.Position == "bottom-right")
             {
-                DrawCard(g, DrawingHelpers.GetBottomLeftCardBounds(true),
+                DrawCard(g, DrawingHelpers.GetBottomRightCardBounds(true),
                     true, card, text, muted, track);
-                DrawCard(g, DrawingHelpers.GetBottomLeftCardBounds(false),
+                DrawCard(g, DrawingHelpers.GetBottomRightCardBounds(false),
                     false, card, text, muted, track);
             }
             else
@@ -1287,13 +1287,55 @@ namespace CodexRateMonitorNative
                     }
                 }
 
-                return selected == null ? IntPtr.Zero : selected.MainWindowHandle;
+                if (selected != null)
+                    return selected.MainWindowHandle;
+
+                return FindEnumeratedDesktopWindow();
             }
             finally
             {
                 if (selected != null)
                     selected.Dispose();
             }
+        }
+
+        private static IntPtr FindEnumeratedDesktopWindow()
+        {
+            var processIds = new HashSet<uint>();
+            foreach (Process process in DesktopAppProcess.GetRunningProcesses())
+            {
+                try
+                {
+                    if (DesktopAppProcess.IsDesktopAppProcess(process))
+                        processIds.Add((uint)process.Id);
+                }
+                catch
+                {
+                }
+                finally
+                {
+                    process.Dispose();
+                }
+            }
+
+            if (processIds.Count == 0)
+                return IntPtr.Zero;
+
+            IntPtr found = IntPtr.Zero;
+            NativeMethods.EnumWindows(delegate(IntPtr window, IntPtr parameter)
+            {
+                if (!NativeMethods.IsWindowVisible(window))
+                    return true;
+
+                uint processId;
+                NativeMethods.GetWindowThreadProcessId(window, out processId);
+                if (!processIds.Contains(processId))
+                    return true;
+
+                found = window;
+                return false;
+            }, IntPtr.Zero);
+            return found;
         }
 
         public static IntPtr FindForegroundDesktopMainWindow()
@@ -1343,7 +1385,7 @@ namespace CodexRateMonitorNative
         public MonitorSettings()
         {
             Language = "auto";
-            Position = "bottom-left";
+            Position = "bottom-right";
             UsageDisplay = "remaining";
             RefreshSeconds = 60;
             Style = new StyleSettings();
@@ -1401,7 +1443,9 @@ namespace CodexRateMonitorNative
         private void Normalize()
         {
             Language = I18n.NormalizeSetting(Language);
-            if (Position != "top" && Position != "bottom-left")
+            if (Position == "bottom-left")
+                Position = "bottom-right";
+            if (Position != "top" && Position != "bottom-right")
                 Position = "top";
             UsageDisplay = UsageDisplayTools.Normalize(UsageDisplay);
             RefreshSeconds = Math.Max(30, Math.Min(900, RefreshSeconds));
@@ -1560,13 +1604,13 @@ namespace CodexRateMonitorNative
 
     internal static class DrawingHelpers
     {
-        public const int BottomLeftWidth = 184;
-        public const int BottomLeftHeight = 66;
+        public const int BottomRightWidth = 184;
+        public const int BottomRightHeight = 66;
 
         // Latin digits and '%' render optically smaller than CJK glyphs in common UI fonts.
         public const float PercentOpticalSizeOffset = 1f;
 
-        public static RectangleF GetBottomLeftCardBounds(bool primary)
+        public static RectangleF GetBottomRightCardBounds(bool primary)
         {
             // Six pixels between rows keeps the cards visually separate at 100–125% DPI.
             return new RectangleF(3, primary ? 3 : 36, 178, 27);
@@ -1710,6 +1754,8 @@ namespace CodexRateMonitorNative
 
     internal static class NativeMethods
     {
+        internal delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
         internal static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
         internal const uint SWP_NOACTIVATE = 0x0010;
         internal const uint SWP_SHOWWINDOW = 0x0040;
@@ -1737,6 +1783,14 @@ namespace CodexRateMonitorNative
 
         [DllImport("user32.dll")]
         internal static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool IsWindowVisible(IntPtr hWnd);
 
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
