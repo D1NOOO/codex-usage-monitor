@@ -55,6 +55,10 @@ instance, then start this build again and bring ChatGPT/Codex to the foreground.
 - Simplified Chinese, Traditional Chinese, and English.
   Language can follow Windows automatically or be selected manually.
 - Optional start-with-Windows toggle.
+- Background update checks with a red tray/overlay badge when a newer stable
+  release is available.
+- In-app Release notes and checksum-verified, in-place updates that preserve
+  the executable path, desktop shortcuts, startup entry, and `settings.json`.
 - No direct access to Codex credential files.
 
 ## Requirements
@@ -101,6 +105,7 @@ Right-click the notification-area icon:
 | Menu item | Behavior |
 |---|---|
 | Refresh now | Reads the latest rate-limit snapshot. |
+| Check for updates | Checks GitHub Releases and opens the update window when a newer version is available. |
 | Reload style | Reloads `settings.json` from disk. |
 | Appearance settings | Opens the visual editor and live preview. |
 | Top title bar | Uses the compact horizontal overlay. |
@@ -109,6 +114,18 @@ Right-click the notification-area icon:
 | Exit | Stops the monitor and the app-server process it launched. |
 
 Double-click the tray icon to open Appearance settings.
+
+### Updates
+
+The monitor checks the repository's latest stable GitHub Release shortly after
+startup and every six hours while running. A red dot appears on the tray icon
+and usage overlay when an update is available. The update window displays the
+Release notes, downloads the official Windows ZIP and `SHA256SUMS.txt`, verifies
+the archive, then updates the existing installation directory and restarts.
+
+The executable remains at the same path, so desktop shortcuts and the Windows
+startup entry continue to work. An existing `settings.json` is never replaced
+by the package default.
 
 ### Language
 
@@ -181,6 +198,8 @@ login, token refresh, and network communication.
 - store visual and diagnostic preferences in `settings.json`;
 - write redacted diagnostic logs under
   `%LOCALAPPDATA%\CodexRateMonitor\logs`, with automatic retention cleanup;
+- read this repository's public GitHub Release metadata in the background and,
+  only after the user chooses Update, download the Release ZIP and checksum;
 - optionally write:
 
   ```text

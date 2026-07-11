@@ -20,6 +20,9 @@ namespace CodexRateMonitorNative
         [STAThread]
         private static void Main(string[] args)
         {
+            if (UpdateInstaller.TryHandleCommandLine(args))
+                return;
+
             bool created;
             using (var mutex = new Mutex(true, @"Local\CodexRateMonitorNative", out created))
             {
@@ -51,10 +54,15 @@ namespace CodexRateMonitorNative
         private readonly System.Windows.Forms.Timer timer;
         private readonly AppServerClient appServer;
         private readonly RateSnapshotStabilizer snapshotStabilizer;
+        private readonly UpdateChecker updateChecker;
         private ToolStripMenuItem startupItem;
+        private ToolStripMenuItem updateItem;
         private ContextMenuStrip trayMenu;
         private MonitorSettings settings;
         private AppearanceSettingsForm appearanceForm;
+        private UpdateForm updateForm;
+        private UpdateInfo availableUpdate;
+        private Icon updateAvailableIcon;
         private DateTime lastRequest = DateTime.MinValue;
         private bool disposed;
 
@@ -73,6 +81,9 @@ namespace CodexRateMonitorNative
             snapshotStabilizer = new RateSnapshotStabilizer();
             appServer.SnapshotReceived += OnSnapshotReceived;
             appServer.StatusChanged += OnStatusChanged;
+
+            updateChecker = new UpdateChecker(BuildVersion.Value);
+            updateChecker.CheckCompleted += OnUpdateCheckCompleted;
 
             applicationIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             trayIcon = new NotifyIcon();
@@ -97,6 +108,9 @@ namespace CodexRateMonitorNative
             var menu = new ContextMenuStrip();
             menu.Items.Add(I18n.T("AppearanceMenu"), null, delegate { ShowAppearanceSettings(); });
             menu.Items.Add(I18n.T("RefreshNow"), null, delegate { RequestRateLimits(); });
+            updateItem = new ToolStripMenuItem(UpdateMenuText());
+            updateItem.Click += delegate { CheckForUpdates(); };
+            menu.Items.Add(updateItem);
             menu.Items.Add(I18n.T("ReloadStyle"), null, delegate { ReloadSettings(); });
             menu.Items.Add(new ToolStripSeparator());
             var topItem = new ToolStripMenuItem(I18n.T("TopPosition"));
@@ -121,6 +135,7 @@ namespace CodexRateMonitorNative
             trayMenu = BuildTrayMenu();
             trayIcon.ContextMenuStrip = trayMenu;
             trayIcon.Text = I18n.T("AppTitle");
+            RefreshUpdateIndicators();
             if (old != null)
                 old.Dispose();
         }
@@ -244,6 +259,160 @@ namespace CodexRateMonitorNative
                 overlay.SetStatus(status);
                 trayIcon.Text = SafeTrayText(I18n.F("TrayStatus", status));
             });
+        }
+
+        private void CheckForUpdates()
+        {
+            if (updateItem != null)
+            {
+                updateItem.Enabled = false;
+                updateItem.Text = I18n.T("CheckingUpdates");
+            }
+            updateChecker.Check(true);
+        }
+
+        private void OnUpdateCheckCompleted(UpdateCheckResult result, bool manual)
+        {
+            Ui(delegate
+            {
+                if (updateItem != null)
+                    updateItem.Enabled = true;
+
+                if (!result.Success)
+                {
+                    DiagnosticLog.Write("update-check-failed", "type=" + (result.Error ?? "unknown"));
+                    RefreshUpdateIndicators();
+                    if (manual)
+                        MessageBox.Show(
+                            I18n.T("UpdateCheckFailed"),
+                            I18n.T("UpdateTitle"),
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Warning);
+                    return;
+                }
+
+                DiagnosticLog.Write(
+                    "update-check",
+                    "latest=" + result.Info.Version +
+                    " available=" + result.UpdateAvailable.ToString(CultureInfo.InvariantCulture));
+                availableUpdate = result.UpdateAvailable ? result.Info : null;
+                RefreshUpdateIndicators();
+
+                if (!manual)
+                    return;
+                if (!result.UpdateAvailable)
+                {
+                    MessageBox.Show(
+                        I18n.F("AlreadyLatest", BuildVersion.Value),
+                        I18n.T("UpdateTitle"),
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                    return;
+                }
+                ShowUpdateForm(result.Info);
+            });
+        }
+
+        private void ShowUpdateForm(UpdateInfo info)
+        {
+            if (updateForm != null && !updateForm.IsDisposed)
+            {
+                updateForm.Activate();
+                return;
+            }
+            updateForm = new UpdateForm(info);
+            updateForm.UpdateRequested += BeginInstallUpdate;
+            updateForm.FormClosed += delegate { updateForm = null; };
+            updateForm.Show();
+            updateForm.Activate();
+        }
+
+        private void BeginInstallUpdate(UpdateForm form, UpdateInfo info)
+        {
+            form.SetBusy(I18n.T("UpdateDownloading"));
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    PreparedUpdate prepared = UpdateInstaller.Prepare(info);
+                    Ui(delegate
+                    {
+                        try
+                        {
+                            form.SetBusy(I18n.T("UpdateInstalling"));
+                            UpdateInstaller.LaunchHelper(prepared, info.Version);
+                            ExitMonitor();
+                        }
+                        catch (Exception ex)
+                        {
+                            DiagnosticLog.Write("update-launch-failed", "type=" + ex.GetType().Name);
+                            form.SetError(I18n.F("UpdateInstallFailed", ex.Message));
+                        }
+                    });
+                }
+                catch (Exception ex)
+                {
+                    DiagnosticLog.Write("update-download-failed", "type=" + ex.GetType().Name);
+                    Ui(delegate
+                    {
+                        if (form != null && !form.IsDisposed)
+                            form.SetError(I18n.F("UpdateInstallFailed", ex.Message));
+                    });
+                }
+            });
+        }
+
+        private string UpdateMenuText()
+        {
+            return availableUpdate == null
+                ? I18n.T("CheckUpdates")
+                : "● " + I18n.F("UpdateAvailableMenu", availableUpdate.Version);
+        }
+
+        private void RefreshUpdateIndicators()
+        {
+            if (updateItem != null)
+                updateItem.Text = UpdateMenuText();
+            bool available = availableUpdate != null;
+            overlay.SetUpdateAvailable(available);
+            if (available)
+            {
+                if (updateAvailableIcon == null)
+                    updateAvailableIcon = CreateBadgedIcon(applicationIcon ?? SystemIcons.Application);
+                trayIcon.Icon = updateAvailableIcon;
+                trayIcon.Text = SafeTrayText(I18n.F("UpdateAvailableTray", availableUpdate.Version));
+            }
+            else
+            {
+                trayIcon.Icon = applicationIcon ?? SystemIcons.Application;
+            }
+        }
+
+        private static Icon CreateBadgedIcon(Icon source)
+        {
+            using (var bitmap = new Bitmap(32, 32))
+            using (Graphics graphics = Graphics.FromImage(bitmap))
+            {
+                graphics.Clear(Color.Transparent);
+                graphics.DrawIcon(source, new Rectangle(0, 0, 32, 32));
+                graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                using (var border = new SolidBrush(Color.White))
+                using (var dot = new SolidBrush(Color.FromArgb(232, 67, 67)))
+                {
+                    graphics.FillEllipse(border, 18, 0, 14, 14);
+                    graphics.FillEllipse(dot, 20, 2, 10, 10);
+                }
+                IntPtr handle = bitmap.GetHicon();
+                try
+                {
+                    using (Icon temporary = Icon.FromHandle(handle))
+                        return (Icon)temporary.Clone();
+                }
+                finally
+                {
+                    NativeMethods.DestroyIcon(handle);
+                }
+            }
         }
 
         private void Ui(Action action)
@@ -373,10 +542,15 @@ namespace CodexRateMonitorNative
             timer.Dispose();
             trayIcon.Visible = false;
             trayIcon.Dispose();
+            updateChecker.Dispose();
+            if (updateAvailableIcon != null)
+                updateAvailableIcon.Dispose();
             if (applicationIcon != null)
                 applicationIcon.Dispose();
             if (appearanceForm != null && !appearanceForm.IsDisposed)
                 appearanceForm.Close();
+            if (updateForm != null && !updateForm.IsDisposed)
+                updateForm.Close();
             appServer.Dispose();
             overlay.Close();
             overlay.Dispose();
@@ -388,6 +562,7 @@ namespace CodexRateMonitorNative
         private MonitorSettings settings;
         private RateSnapshot snapshot;
         private string status = I18n.T("Connecting");
+        private bool updateAvailable;
 
         public OverlayForm(MonitorSettings initialSettings)
         {
@@ -456,6 +631,12 @@ namespace CodexRateMonitorNative
         {
             if (snapshot == null)
                 status = value;
+            Invalidate();
+        }
+
+        public void SetUpdateAvailable(bool value)
+        {
+            updateAvailable = value;
             Invalidate();
         }
 
@@ -546,6 +727,17 @@ namespace CodexRateMonitorNative
             {
                 DrawCard(g, new RectangleF(5, 5, 228, 30), true, card, text, muted, track);
                 DrawCard(g, new RectangleF(237, 5, 228, 30), false, card, text, muted, track);
+            }
+
+            if (updateAvailable)
+            {
+                float right = Width / scale;
+                using (var borderBrush = new SolidBrush(Color.White))
+                using (var dotBrush = new SolidBrush(Color.FromArgb(232, 67, 67)))
+                {
+                    g.FillEllipse(borderBrush, right - 13f, 3f, 10f, 10f);
+                    g.FillEllipse(dotBrush, right - 11f, 5f, 6f, 6f);
+                }
             }
         }
 
@@ -2192,6 +2384,10 @@ namespace CodexRateMonitorNative
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static extern bool SetProcessDPIAware();
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool DestroyIcon(IntPtr handle);
 
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]

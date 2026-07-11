@@ -59,7 +59,9 @@ if ($badCounts.Count -gt 0) {
 }
 
 $source = (Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src\CodexRateMonitor.cs')) +
-    (Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src\AppearanceSettingsForm.cs'))
+    (Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src\AppearanceSettingsForm.cs')) +
+    (Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src\UpdateChecker.cs')) +
+    (Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src\UpdateForm.cs'))
 $usedKeys = [regex]::Matches($source, 'I18n\.(?:T|F|Translate)\("([A-Za-z0-9]+)"') |
     ForEach-Object { $_.Groups[1].Value } |
     Sort-Object -Unique

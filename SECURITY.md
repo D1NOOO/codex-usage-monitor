@@ -28,6 +28,9 @@ Codex Rate Monitor:
   (7 days by default);
 - communicates with a locally launched `codex app-server` process over
   redirected standard input/output;
+- checks the public `D1NOOO/codex-usage-monitor` GitHub Releases API and, only
+  after the user chooses Update, downloads the Release ZIP and checksum file;
+- verifies the downloaded ZIP against `SHA256SUMS.txt` before replacing files;
 - stores display and diagnostic preferences in `settings.json`;
 - optionally writes one current-user startup entry under
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
