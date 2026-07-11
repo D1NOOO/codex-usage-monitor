@@ -22,10 +22,13 @@ Codex Rate Monitor:
 
 - does not open, parse, copy, or print `auth.json`;
 - does not store access tokens or account identifiers;
-- does not write usage history or application logs;
+- writes redacted local diagnostic logs containing rate-limit values and event
+  metadata under `%LOCALAPPDATA%\CodexRateMonitor\logs`;
+- automatically deletes diagnostic logs after the configured retention period
+  (7 days by default);
 - communicates with a locally launched `codex app-server` process over
   redirected standard input/output;
-- stores only display preferences in `settings.json`;
+- stores display and diagnostic preferences in `settings.json`;
 - optionally writes one current-user startup entry under
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 

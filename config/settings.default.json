@@ -1,8 +1,10 @@
 {
   "Language": "auto",
-  "Position": "bottom-right",
+  "Position": "top",
   "UsageDisplay": "remaining",
   "RefreshSeconds": 60,
+  "DiagnosticsEnabled": true,
+  "DiagnosticRetentionDays": 7,
   "Style": {
     "Scale": 1.0,
     "Opacity": 0.97,

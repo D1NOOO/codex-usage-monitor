@@ -50,6 +50,7 @@ namespace CodexRateMonitorNative
         private readonly Icon applicationIcon;
         private readonly System.Windows.Forms.Timer timer;
         private readonly AppServerClient appServer;
+        private readonly RateSnapshotStabilizer snapshotStabilizer;
         private ToolStripMenuItem startupItem;
         private ContextMenuStrip trayMenu;
         private MonitorSettings settings;
@@ -60,11 +61,16 @@ namespace CodexRateMonitorNative
         public MonitorContext(bool showSettings)
         {
             settings = MonitorSettings.Load();
+            DiagnosticLog.Configure(
+                settings.DiagnosticsEnabled,
+                settings.DiagnosticRetentionDays);
+            DiagnosticLog.Write("monitor-start", "version=" + BuildVersion.Value);
             I18n.SetLanguage(settings.Language);
             overlay = new OverlayForm(settings);
             IntPtr ignored = overlay.Handle;
 
             appServer = new AppServerClient();
+            snapshotStabilizer = new RateSnapshotStabilizer();
             appServer.SnapshotReceived += OnSnapshotReceived;
             appServer.StatusChanged += OnStatusChanged;
 
@@ -121,6 +127,7 @@ namespace CodexRateMonitorNative
 
         private void OnTimerTick(object sender, EventArgs e)
         {
+            DiagnosticLog.CleanupIfDue();
             IntPtr desktopWindow = WindowLocator.FindForegroundDesktopMainWindow();
             bool desktopIsForeground = desktopWindow != IntPtr.Zero &&
                                        !NativeMethods.IsIconic(desktopWindow);
@@ -149,9 +156,11 @@ namespace CodexRateMonitorNative
             try
             {
                 appServer.Start();
+                lastRequest = DateTime.Now;
             }
             catch (Exception ex)
             {
+                DiagnosticLog.Write("app-server-start-failed", "type=" + ex.GetType().Name);
                 overlay.SetStatus(I18n.T("ServiceError"));
                 trayIcon.Text = SafeTrayText(I18n.F("StartFailed", ex.Message));
             }
@@ -170,14 +179,45 @@ namespace CodexRateMonitorNative
                 return;
 
             lastRequest = DateTime.Now;
-            appServer.RequestRateLimits();
+            appServer.RefreshRateLimits();
         }
 
         private void OnSnapshotReceived(RateSnapshot snapshot)
         {
             Ui(delegate
             {
+                string validation;
+                if (!snapshotStabilizer.TryAccept(
+                    snapshot, DateTimeOffset.UtcNow, out validation))
+                {
+                    DiagnosticLog.Write(
+                        "snapshot-deferred",
+                        validation + " " + AppServerClient.DescribeSnapshot(snapshot));
+                    lastRequest = DateTime.Now;
+                    try
+                    {
+                        appServer.RefreshRateLimits();
+                    }
+                    catch (Exception ex)
+                    {
+                        DiagnosticLog.Write(
+                            "snapshot-retry-failed",
+                            "type=" + ex.GetType().Name);
+                    }
+                    return;
+                }
+
+                if (validation.StartsWith(
+                    "accepted=confirmed-reset", StringComparison.Ordinal))
+                    DiagnosticLog.Write(
+                        "snapshot-confirmed",
+                        AppServerClient.DescribeSnapshot(snapshot));
+
                 overlay.SetSnapshot(snapshot);
+                DiagnosticLog.Write(
+                    "snapshot-displayed",
+                    "mode=" + settings.UsageDisplay +
+                    " " + AppServerClient.DescribeSnapshot(snapshot));
                 trayIcon.Text = SafeTrayText(
                     string.Format(CultureInfo.InvariantCulture,
                         I18n.T("UsageTray"),
@@ -239,6 +279,9 @@ namespace CodexRateMonitorNative
         private void ReloadSettings()
         {
             settings = MonitorSettings.Load();
+            DiagnosticLog.Configure(
+                settings.DiagnosticsEnabled,
+                settings.DiagnosticRetentionDays);
             I18n.SetLanguage(settings.Language);
             RefreshTrayLanguage();
             overlay.ApplySettings(settings);
@@ -263,6 +306,9 @@ namespace CodexRateMonitorNative
                 delegate(MonitorSettings saved)
                 {
                     settings = saved.Clone();
+                    DiagnosticLog.Configure(
+                        settings.DiagnosticsEnabled,
+                        settings.DiagnosticRetentionDays);
                     I18n.SetLanguage(settings.Language);
                     settings.Save();
                     RefreshTrayLanguage();
@@ -322,6 +368,7 @@ namespace CodexRateMonitorNative
             if (disposed)
                 return;
             disposed = true;
+            DiagnosticLog.Write("monitor-stop", null);
             timer.Stop();
             timer.Dispose();
             trayIcon.Visible = false;
@@ -628,11 +675,18 @@ namespace CodexRateMonitorNative
             {
                 try
                 {
+                    DiagnosticLog.Write(
+                        "app-server-candidate",
+                        "executable=" + SafeExecutableName(candidate.FileName));
                     StartCandidate(candidate);
                     return;
                 }
                 catch (Exception ex)
                 {
+                    DiagnosticLog.Write(
+                        "app-server-candidate-failed",
+                        "executable=" + SafeExecutableName(candidate.FileName) +
+                        " type=" + ex.GetType().Name);
                     lastError = ex;
                     DisposeProcess();
                 }
@@ -664,6 +718,10 @@ namespace CodexRateMonitorNative
 
             process = Process.Start(startInfo);
             IsInitialized = false;
+            DiagnosticLog.Write(
+                "app-server-started",
+                "pid=" + process.Id.ToString(CultureInfo.InvariantCulture) +
+                " executable=" + SafeExecutableName(candidate.FileName));
 
             outputThread = new Thread(ReadOutput);
             outputThread.IsBackground = true;
@@ -705,11 +763,27 @@ namespace CodexRateMonitorNative
             int id = Interlocked.Increment(ref requestId);
             lock (requestLock)
                 rateLimitRequests.Add(id);
+            DiagnosticLog.Write(
+                "rate-request",
+                "id=" + id.ToString(CultureInfo.InvariantCulture));
             var message = new Dictionary<string, object>();
             message["method"] = "account/rateLimits/read";
             message["id"] = id;
             message["params"] = new Dictionary<string, object>();
             Send(message);
+        }
+
+        public void RefreshRateLimits()
+        {
+            if (!IsInitialized)
+                return;
+
+            // account/rateLimits/read can remain pinned to the snapshot captured when
+            // a long-lived app-server starts. Recreate the local child so each timed
+            // refresh reads current server-side limits.
+            DiagnosticLog.Write("app-server-refresh", "action=restart");
+            DisposeProcess();
+            Start();
         }
 
         private void ReadOutput()
@@ -725,11 +799,13 @@ namespace CodexRateMonitorNative
             }
             catch (Exception ex)
             {
+                DiagnosticLog.Write("app-server-read-failed", "type=" + ex.GetType().Name);
                 RaiseStatus(I18n.F("CommunicationError", ex.Message));
             }
             finally
             {
                 IsInitialized = false;
+                DiagnosticLog.Write("app-server-output-ended", null);
             }
         }
 
@@ -737,9 +813,15 @@ namespace CodexRateMonitorNative
         {
             try
             {
+                bool reported = false;
                 while (!disposed && process != null &&
                        process.StandardError.ReadLine() != null)
                 {
+                    if (!reported)
+                    {
+                        DiagnosticLog.Write("app-server-stderr", "content=redacted");
+                        reported = true;
+                    }
                 }
             }
             catch
@@ -756,6 +838,7 @@ namespace CodexRateMonitorNative
             }
             catch
             {
+                DiagnosticLog.Write("app-server-invalid-json", null);
                 return;
             }
             if (message == null)
@@ -766,6 +849,7 @@ namespace CodexRateMonitorNative
             {
                 if (message.ContainsKey("error"))
                 {
+                    DiagnosticLog.Write("app-server-initialize-error", null);
                     RaiseStatus(I18n.T("InitializationFailed"));
                     return;
                 }
@@ -773,6 +857,7 @@ namespace CodexRateMonitorNative
                 initialized["method"] = "initialized";
                 Send(initialized);
                 IsInitialized = true;
+                DiagnosticLog.Write("app-server-initialized", null);
                 RequestRateLimits();
                 return;
             }
@@ -794,11 +879,19 @@ namespace CodexRateMonitorNative
             {
                 if (message.ContainsKey("error"))
                 {
+                    DiagnosticLog.Write(
+                        "rate-response-error",
+                        "id=" + id.ToString(CultureInfo.InvariantCulture));
                     RaiseStatus(GetRateLimitErrorStatus(message));
                     return;
                 }
                 var result = GetDictionary(message, "result");
                 RateSnapshot snapshot = ParseReadResult(result);
+                DiagnosticLog.Write(
+                    "rate-response",
+                    "id=" + id.ToString(CultureInfo.InvariantCulture) +
+                    " raw=" + DescribeRateLimitsContainer(result) +
+                    " parsed=" + DescribeSnapshot(snapshot));
                 if (snapshot != null)
                     RaiseSnapshot(snapshot);
                 return;
@@ -809,6 +902,10 @@ namespace CodexRateMonitorNative
             {
                 var parameters = GetDictionary(message, "params");
                 RateSnapshot snapshot = ParseRateLimitsContainer(parameters);
+                DiagnosticLog.Write(
+                    "rate-notification",
+                    "raw=" + DescribeRateLimitsContainer(parameters) +
+                    " parsed=" + DescribeSnapshot(snapshot));
                 if (snapshot != null)
                     RaiseSnapshot(snapshot);
             }
@@ -861,6 +958,83 @@ namespace CodexRateMonitorNative
         private static bool HasUsageWindow(RateSnapshot snapshot)
         {
             return snapshot != null && (snapshot.Primary != null || snapshot.Secondary != null);
+        }
+
+        private static string DescribeRateLimitsContainer(Dictionary<string, object> source)
+        {
+            if (source == null)
+                return "null";
+
+            var parts = new List<string>();
+            AppendSnapshotDescription(parts, "rateLimits", GetDictionary(source, "rateLimits"));
+            var byId = GetDictionary(source, "rateLimitsByLimitId");
+            AppendSnapshotDescription(parts, "byId.codex", GetDictionary(byId, "codex"));
+            AppendSnapshotDescription(parts, "direct", source);
+            return parts.Count == 0 ? "no-windows" : string.Join(";", parts.ToArray());
+        }
+
+        private static void AppendSnapshotDescription(
+            List<string> parts,
+            string name,
+            Dictionary<string, object> source)
+        {
+            if (source == null)
+                return;
+            var primary = GetDictionary(source, "primary");
+            var secondary = GetDictionary(source, "secondary");
+            if (primary == null && secondary == null)
+                return;
+            parts.Add(
+                name + "{primary=" + DescribeRawWindow(primary) +
+                ",secondary=" + DescribeRawWindow(secondary) + "}");
+        }
+
+        private static string DescribeRawWindow(Dictionary<string, object> source)
+        {
+            if (source == null)
+                return "null";
+            double used;
+            long duration;
+            long reset;
+            return "used=" + (TryDouble(source, "usedPercent", out used)
+                    ? used.ToString("0.###", CultureInfo.InvariantCulture)
+                    : "missing") +
+                ",duration=" + (TryLong(source, "windowDurationMins", out duration)
+                    ? duration.ToString(CultureInfo.InvariantCulture)
+                    : "missing") +
+                ",reset=" + (TryLong(source, "resetsAt", out reset)
+                    ? reset.ToString(CultureInfo.InvariantCulture)
+                    : "missing");
+        }
+
+        internal static string DescribeSnapshot(RateSnapshot snapshot)
+        {
+            if (snapshot == null)
+                return "null";
+            return "primary=" + DescribeWindow(snapshot.Primary) +
+                ",secondary=" + DescribeWindow(snapshot.Secondary);
+        }
+
+        private static string DescribeWindow(WindowUsage usage)
+        {
+            if (usage == null)
+                return "null";
+            return "used=" + usage.UsedPercent.ToString("0.###", CultureInfo.InvariantCulture) +
+                ",reset=" + (usage.ResetsAt.HasValue
+                    ? usage.ResetsAt.Value.ToString(CultureInfo.InvariantCulture)
+                    : "missing");
+        }
+
+        private static string SafeExecutableName(string path)
+        {
+            try
+            {
+                return string.IsNullOrWhiteSpace(path) ? "unknown" : Path.GetFileName(path);
+            }
+            catch
+            {
+                return "unknown";
+            }
         }
 
         private static string GetRateLimitErrorStatus(Dictionary<string, object> message)
@@ -983,18 +1157,29 @@ namespace CodexRateMonitorNative
 
         private static double GetDouble(Dictionary<string, object> source, string key)
         {
+            double value;
+            return TryDouble(source, key, out value) ? value : 0;
+        }
+
+        private static bool TryDouble(
+            Dictionary<string, object> source,
+            string key,
+            out double value)
+        {
+            value = 0;
             if (source == null)
-                return 0;
+                return false;
             object raw;
             if (!source.TryGetValue(key, out raw) || raw == null)
-                return 0;
+                return false;
             try
             {
-                return Convert.ToDouble(raw, CultureInfo.InvariantCulture);
+                value = Convert.ToDouble(raw, CultureInfo.InvariantCulture);
+                return true;
             }
             catch
             {
-                return 0;
+                return false;
             }
         }
 
@@ -1012,21 +1197,37 @@ namespace CodexRateMonitorNative
         {
             IsInitialized = false;
 
+            Process current = process;
+            process = null;
+
             try
             {
-                if (process != null && !process.HasExited)
+                if (current != null && !current.HasExited)
                 {
-                    process.StandardInput.Close();
-                    if (!process.WaitForExit(1000))
-                        process.Kill();
+                    current.StandardInput.Close();
+                    if (!current.WaitForExit(1000))
+                        current.Kill();
                 }
             }
             catch
             {
             }
-            if (process != null)
-                process.Dispose();
-            process = null;
+
+            try
+            {
+                if (outputThread != null && outputThread != Thread.CurrentThread)
+                    outputThread.Join(1000);
+                if (errorThread != null && errorThread != Thread.CurrentThread)
+                    errorThread.Join(1000);
+            }
+            catch
+            {
+            }
+            outputThread = null;
+            errorThread = null;
+
+            if (current != null)
+                current.Dispose();
         }
     }
 
@@ -1369,20 +1570,117 @@ namespace CodexRateMonitorNative
         }
     }
 
+    internal static class DiagnosticLog
+    {
+        private static readonly object Sync = new object();
+        private static bool enabled;
+        private static int retentionDays = 7;
+        private static DateTime nextCleanupUtc = DateTime.MinValue;
+
+        public static string DirectoryPath
+        {
+            get
+            {
+                return Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "CodexRateMonitor",
+                    "logs");
+            }
+        }
+
+        public static void Configure(bool isEnabled, int days)
+        {
+            lock (Sync)
+            {
+                enabled = isEnabled;
+                retentionDays = Math.Max(1, Math.Min(30, days));
+                nextCleanupUtc = DateTime.MinValue;
+            }
+            CleanupIfDue();
+        }
+
+        public static void Write(string eventName, string details)
+        {
+            lock (Sync)
+            {
+                if (!enabled)
+                    return;
+                try
+                {
+                    Directory.CreateDirectory(DirectoryPath);
+                    string path = Path.Combine(
+                        DirectoryPath,
+                        "usage-" + DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) +
+                        ".log");
+                    string line = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture) +
+                        " " + Clean(eventName);
+                    if (!string.IsNullOrWhiteSpace(details))
+                        line += " " + Clean(details);
+                    File.AppendAllText(path, line + Environment.NewLine, new UTF8Encoding(false));
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        public static void CleanupIfDue()
+        {
+            lock (Sync)
+            {
+                if (!enabled || DateTime.UtcNow < nextCleanupUtc)
+                    return;
+                nextCleanupUtc = DateTime.UtcNow.AddHours(1);
+                try
+                {
+                    if (!Directory.Exists(DirectoryPath))
+                        return;
+                    DateTime cutoff = DateTime.UtcNow.Date.AddDays(1 - retentionDays);
+                    foreach (string path in Directory.GetFiles(DirectoryPath, "usage-*.log"))
+                    {
+                        try
+                        {
+                            if (File.GetLastWriteTimeUtc(path) < cutoff)
+                                File.Delete(path);
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        private static string Clean(string value)
+        {
+            return (value ?? string.Empty)
+                .Replace('\r', ' ')
+                .Replace('\n', ' ')
+                .Replace('\t', ' ');
+        }
+    }
+
     internal sealed class MonitorSettings
     {
         public string Language { get; set; }
         public string Position { get; set; }
         public string UsageDisplay { get; set; }
         public int RefreshSeconds { get; set; }
+        public bool DiagnosticsEnabled { get; set; }
+        public int DiagnosticRetentionDays { get; set; }
         public StyleSettings Style { get; set; }
 
         public MonitorSettings()
         {
             Language = "auto";
-            Position = "bottom-right";
+            Position = "top";
             UsageDisplay = "remaining";
             RefreshSeconds = 60;
+            DiagnosticsEnabled = true;
+            DiagnosticRetentionDays = 7;
             Style = new StyleSettings();
         }
 
@@ -1430,6 +1728,8 @@ namespace CodexRateMonitorNative
             clone.Position = Position;
             clone.UsageDisplay = UsageDisplay;
             clone.RefreshSeconds = RefreshSeconds;
+            clone.DiagnosticsEnabled = DiagnosticsEnabled;
+            clone.DiagnosticRetentionDays = DiagnosticRetentionDays;
             clone.Style = Style == null ? new StyleSettings() : Style.Clone();
             clone.Normalize();
             return clone;
@@ -1444,6 +1744,7 @@ namespace CodexRateMonitorNative
                 Position = "top";
             UsageDisplay = UsageDisplayTools.Normalize(UsageDisplay);
             RefreshSeconds = Math.Max(30, Math.Min(900, RefreshSeconds));
+            DiagnosticRetentionDays = Math.Max(1, Math.Min(30, DiagnosticRetentionDays));
             if (Style == null)
                 Style = new StyleSettings();
             Style.Normalize();
@@ -1545,6 +1846,135 @@ namespace CodexRateMonitorNative
     {
         public double UsedPercent { get; set; }
         public long? ResetsAt { get; set; }
+    }
+
+    internal sealed class RateSnapshotStabilizer
+    {
+        private const double PercentTolerance = 0.5d;
+        private const long ResetMatchToleranceSeconds = 120;
+        private const int RequiredResetConfirmations = 3;
+
+        private RateSnapshot accepted;
+        private RateSnapshot pending;
+        private DateTimeOffset pendingObservedAt;
+        private int pendingConfirmations;
+
+        public bool TryAccept(
+            RateSnapshot candidate,
+            DateTimeOffset observedAt,
+            out string validation)
+        {
+            validation = "accepted=normal";
+            if (candidate == null)
+                return false;
+
+            if (accepted == null || !IsSuspiciousRegression(accepted, candidate, observedAt))
+            {
+                accepted = Clone(candidate);
+                pending = null;
+                pendingConfirmations = 0;
+                return true;
+            }
+
+            if (pending != null && SameWindowGeneration(
+                pending, candidate, observedAt - pendingObservedAt))
+            {
+                pending = Clone(candidate);
+                pendingObservedAt = observedAt;
+                pendingConfirmations++;
+                if (pendingConfirmations >= RequiredResetConfirmations)
+                {
+                    accepted = Clone(candidate);
+                    pending = null;
+                    pendingConfirmations = 0;
+                    validation = "accepted=confirmed-reset confirmations=" +
+                        RequiredResetConfirmations.ToString(CultureInfo.InvariantCulture);
+                    return true;
+                }
+
+                validation = "accepted=deferred-suspicious-regression confirmations=" +
+                    pendingConfirmations.ToString(CultureInfo.InvariantCulture) + "/" +
+                    RequiredResetConfirmations.ToString(CultureInfo.InvariantCulture);
+                return false;
+            }
+
+            pending = Clone(candidate);
+            pendingObservedAt = observedAt;
+            pendingConfirmations = 1;
+            validation = "accepted=deferred-suspicious-regression confirmations=1/" +
+                RequiredResetConfirmations.ToString(CultureInfo.InvariantCulture);
+            return false;
+        }
+
+        private static bool IsSuspiciousRegression(
+            RateSnapshot current,
+            RateSnapshot candidate,
+            DateTimeOffset observedAt)
+        {
+            long now = observedAt.ToUnixTimeSeconds();
+            return WindowRegressedBeforeReset(current.Primary, candidate.Primary, now) ||
+                WindowRegressedBeforeReset(current.Secondary, candidate.Secondary, now);
+        }
+
+        private static bool WindowRegressedBeforeReset(
+            WindowUsage current,
+            WindowUsage candidate,
+            long now)
+        {
+            return current != null && candidate != null &&
+                current.ResetsAt.HasValue && current.ResetsAt.Value > now &&
+                candidate.UsedPercent + PercentTolerance < current.UsedPercent;
+        }
+
+        private static bool SameWindowGeneration(
+            RateSnapshot first,
+            RateSnapshot second,
+            TimeSpan elapsed)
+        {
+            return WindowsMatch(first.Primary, second.Primary, elapsed) &&
+                WindowsMatch(first.Secondary, second.Secondary, elapsed);
+        }
+
+        private static bool WindowsMatch(
+            WindowUsage first,
+            WindowUsage second,
+            TimeSpan elapsed)
+        {
+            if (first == null || second == null)
+                return first == null && second == null;
+            if (second.UsedPercent + PercentTolerance < first.UsedPercent)
+                return false;
+            if (!first.ResetsAt.HasValue || !second.ResetsAt.HasValue)
+                return first.ResetsAt.HasValue == second.ResetsAt.HasValue;
+
+            long delta = second.ResetsAt.Value - first.ResetsAt.Value;
+            long elapsedSeconds = Math.Max(0L, (long)Math.Round(elapsed.TotalSeconds));
+            return Math.Abs(delta) <= ResetMatchToleranceSeconds ||
+                Math.Abs(delta - elapsedSeconds) <= ResetMatchToleranceSeconds;
+        }
+
+        private static RateSnapshot Clone(RateSnapshot value)
+        {
+            if (value == null)
+                return null;
+            return new RateSnapshot
+            {
+                Primary = Clone(value.Primary),
+                Secondary = Clone(value.Secondary),
+                PlanType = value.PlanType
+            };
+        }
+
+        private static WindowUsage Clone(WindowUsage value)
+        {
+            if (value == null)
+                return null;
+            return new WindowUsage
+            {
+                UsedPercent = value.UsedPercent,
+                ResetsAt = value.ResetsAt
+            };
+        }
     }
 
     internal static class UsageDisplayTools

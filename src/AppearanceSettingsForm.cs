@@ -81,15 +81,15 @@ namespace CodexRateMonitorNative
             root.Controls.Add(preview, 0, 1);
 
             bottomPosition = new RadioButton();
-            bottomPosition.Text = I18n.T("BottomRecommended");
+            bottomPosition.Text = I18n.T("BottomPosition");
             bottomPosition.AutoSize = true;
-            bottomPosition.Margin = new Padding(4, 4, 18, 0);
+            bottomPosition.Margin = new Padding(0, 4, 0, 0);
             bottomPosition.CheckedChanged += ControlChanged;
 
             topPosition = new RadioButton();
-            topPosition.Text = I18n.T("TopPosition");
+            topPosition.Text = I18n.T("TopRecommended");
             topPosition.AutoSize = true;
-            topPosition.Margin = new Padding(0, 4, 0, 0);
+            topPosition.Margin = new Padding(4, 4, 18, 0);
             topPosition.CheckedChanged += ControlChanged;
 
             showRemaining = new RadioButton();
@@ -140,8 +140,8 @@ namespace CodexRateMonitorNative
             var positionFlow = new FlowLayoutPanel();
             positionFlow.Dock = DockStyle.Fill;
             positionFlow.WrapContents = false;
-            positionFlow.Controls.Add(bottomPosition);
             positionFlow.Controls.Add(topPosition);
+            positionFlow.Controls.Add(bottomPosition);
             displayLayout.Controls.Add(positionFlow, 1, 0);
 
             var languageFlow = new FlowLayoutPanel();

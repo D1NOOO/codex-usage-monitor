@@ -132,15 +132,15 @@ codex.exe app-server
 
 - 僅透過重新導向的標準輸入／輸出與子程序 `codex app-server` 通訊；
 - 在記憶體暫存目前用量以供顯示；
-- 在 `settings.json` 儲存顯示偏好；
+- 在 `settings.json` 儲存顯示與診斷偏好；
+- 在 `%LOCALAPPDATA%\CodexRateMonitor\logs` 寫入去識別化診斷日誌，並自動清理過期檔案；
 - 使用者選擇開機啟動時，在
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 寫入一個項目。
 
 本工具不會：
 
 - 開啟、解析、複製、上傳或列印 `auth.json`；
-- 儲存存取權杖、帳戶識別碼或歷史用量；
-- 寫入應用程式日誌；
+- 儲存存取權杖或帳戶識別碼；
 - 加入遙測或統計；
 - 要求 OpenAI API Key；
 - 將用量傳送到開發者控制的伺服器。
@@ -152,14 +152,16 @@ codex.exe app-server
 ## 設定
 
 Release 中的 `settings.json` 來自隱私安全的
-`config/settings.default.json`，只包含顯示偏好：
+`config/settings.default.json`，包含顯示與診斷偏好：
 
 | 欄位 | 可選值 |
 |---|---|
 | `Language` | `auto`、`zh-CN`、`zh-TW`、`en` |
-| `Position` | `bottom-right`、`top`（舊的 `bottom-left` 會自動遷移） |
+| `Position` | `top`（預設）、`bottom-right`（舊的 `bottom-left` 會自動遷移） |
 | `UsageDisplay` | `remaining`（預設）、`used` |
 | `RefreshSeconds` | 30–900 |
+| `DiagnosticsEnabled` | `true`（預設）、`false` |
+| `DiagnosticRetentionDays` | 1–30（預設 7） |
 | `Style.Scale` | 0.75–1.50 |
 | `Style.Opacity` | 0.50–1.00 |
 | `Style.FontSize` | 10–22 |
@@ -167,6 +169,10 @@ Release 中的 `settings.json` 來自隱私安全的
 
 顏色使用 `#RRGGBB` 或 `#RRGGBBAA`。個人執行產生的 `settings.json`
 已由 `.gitignore` 排除，倉庫只提交預設範本。
+
+診斷日誌只記錄時間、請求／通知類型、原始限額百分比、視窗長度、重設時間、
+解析結果和去識別化錯誤分類；不會記錄完整 app-server 訊息、權杖、帳戶識別碼或驗證檔案。
+程式啟動時會清理一次，執行期間最多每小時清理一次。
 
 ## 從原始碼建置
 

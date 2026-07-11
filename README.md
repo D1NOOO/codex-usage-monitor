@@ -178,7 +178,9 @@ login, token refresh, and network communication.
 - communicate only with a child `codex app-server` over redirected standard
   input/output;
 - retain current usage values in memory for display;
-- store visual preferences in `settings.json`;
+- store visual and diagnostic preferences in `settings.json`;
+- write redacted diagnostic logs under
+  `%LOCALAPPDATA%\CodexRateMonitor\logs`, with automatic retention cleanup;
 - optionally write:
 
   ```text
@@ -188,8 +190,7 @@ login, token refresh, and network communication.
 ### The application does not
 
 - open, parse, copy, upload, or print `auth.json`;
-- store access tokens, account identifiers, or usage history;
-- write application logs;
+- store access tokens or account identifiers;
 - include telemetry or analytics;
 - require an OpenAI API key;
 - send usage data to a developer-controlled server.
@@ -204,16 +205,18 @@ the repository public.
 ## Configuration
 
 `settings.json` is created from `config/settings.default.json` in release
-packages. It stores display preferences only.
+packages. It stores display and diagnostic preferences.
 
 Important fields:
 
 | Field | Values |
 |---|---|
 | `Language` | `auto`, `zh-CN`, `zh-TW`, `en` |
-| `Position` | `bottom-right`, `top` (`bottom-left` is migrated automatically) |
+| `Position` | `top` (default), `bottom-right` (`bottom-left` is migrated automatically) |
 | `UsageDisplay` | `remaining` (default), `used` |
 | `RefreshSeconds` | 30–900 |
+| `DiagnosticsEnabled` | `true` (default), `false` |
+| `DiagnosticRetentionDays` | 1–30 (default: 7) |
 | `Style.Scale` | 0.75–1.50 |
 | `Style.Opacity` | 0.50–1.00 |
 | `Style.FontSize` | 10–22 |
@@ -223,6 +226,12 @@ Colors use `#RRGGBB` or `#RRGGBBAA`.
 
 Runtime `settings.json` is ignored by Git. Only the privacy-safe default
 template is committed.
+
+Diagnostic logs contain timestamps, request/notification types, raw rate-limit
+percentages, window durations, reset timestamps, parsed values, and redacted
+error categories. They never contain complete app-server messages, tokens,
+account identifiers, or authentication files. Cleanup runs at startup and at
+most once per hour while the monitor is running.
 
 ## Build from source
 
