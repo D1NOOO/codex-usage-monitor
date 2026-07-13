@@ -613,7 +613,7 @@ namespace CodexRateMonitorNative
 
         public void SetSnapshot(RateSnapshot value)
         {
-            if (snapshot != null && value != null)
+            if (snapshot != null && value != null && !value.ReplaceMissingWindows)
             {
                 if (value.Primary == null)
                     value.Primary = snapshot.Primary;
@@ -763,7 +763,9 @@ namespace CodexRateMonitorNative
                     usage.UsedPercent, settings.UsageDisplay);
             string percent = usage == null ? "--%" :
                 UsageDisplayTools.FormatPercent(value);
-            string reset = usage == null ? (status ?? I18n.T("Connecting")) : FormatReset(usage.ResetsAt);
+            string reset = usage == null
+                ? (snapshot == null ? (status ?? I18n.T("Connecting")) : I18n.T("Unavailable"))
+                : FormatReset(usage.ResetsAt);
 
             FontFamily family;
             try
@@ -1105,7 +1107,10 @@ namespace CodexRateMonitorNative
 
         private RateSnapshot ParseReadResult(Dictionary<string, object> result)
         {
-            return ParseRateLimitsContainer(result);
+            RateSnapshot snapshot = ParseRateLimitsContainer(result);
+            if (snapshot != null)
+                snapshot.ReplaceMissingWindows = true;
+            return snapshot;
         }
 
         private static RateSnapshot ParseRateLimitsContainer(Dictionary<string, object> source)
@@ -1212,6 +1217,9 @@ namespace CodexRateMonitorNative
             if (usage == null)
                 return "null";
             return "used=" + usage.UsedPercent.ToString("0.###", CultureInfo.InvariantCulture) +
+                ",duration=" + (usage.WindowDurationMins.HasValue
+                    ? usage.WindowDurationMins.Value.ToString(CultureInfo.InvariantCulture)
+                    : "missing") +
                 ",reset=" + (usage.ResetsAt.HasValue
                     ? usage.ResetsAt.Value.ToString(CultureInfo.InvariantCulture)
                     : "missing");
@@ -1245,10 +1253,39 @@ namespace CodexRateMonitorNative
             if (source == null)
                 return null;
             var snapshot = new RateSnapshot();
-            snapshot.Primary = ParseWindow(GetDictionary(source, "primary"));
-            snapshot.Secondary = ParseWindow(GetDictionary(source, "secondary"));
+            AddWindow(snapshot, ParseWindow(GetDictionary(source, "primary")), true);
+            AddWindow(snapshot, ParseWindow(GetDictionary(source, "secondary")), false);
             snapshot.PlanType = GetString(source, "planType");
             return snapshot;
+        }
+
+        private static void AddWindow(
+            RateSnapshot snapshot,
+            WindowUsage usage,
+            bool wasPrimary)
+        {
+            if (usage == null)
+                return;
+
+            // The service normally returns the 5-hour window as primary and the
+            // 7-day window as secondary. When the 5-hour limit is disabled, the
+            // remaining 7-day window can move to primary, so duration is the
+            // stable identifier and position is only a legacy fallback.
+            if (usage.WindowDurationMins == 300)
+            {
+                snapshot.Primary = usage;
+                return;
+            }
+            if (usage.WindowDurationMins == 10080)
+            {
+                snapshot.Secondary = usage;
+                return;
+            }
+
+            if (wasPrimary && snapshot.Primary == null)
+                snapshot.Primary = usage;
+            else if (!wasPrimary && snapshot.Secondary == null)
+                snapshot.Secondary = usage;
         }
 
         private static WindowUsage ParseWindow(Dictionary<string, object> source)
@@ -1258,6 +1295,8 @@ namespace CodexRateMonitorNative
             var usage = new WindowUsage();
             usage.UsedPercent = GetDouble(source, "usedPercent");
             long value;
+            if (TryLong(source, "windowDurationMins", out value))
+                usage.WindowDurationMins = value;
             if (TryLong(source, "resetsAt", out value))
                 usage.ResetsAt = value;
             return usage;
@@ -2032,11 +2071,13 @@ namespace CodexRateMonitorNative
         public WindowUsage Primary { get; set; }
         public WindowUsage Secondary { get; set; }
         public string PlanType { get; set; }
+        public bool ReplaceMissingWindows { get; set; }
     }
 
     internal sealed class WindowUsage
     {
         public double UsedPercent { get; set; }
+        public long? WindowDurationMins { get; set; }
         public long? ResetsAt { get; set; }
     }
 
@@ -2153,7 +2194,8 @@ namespace CodexRateMonitorNative
             {
                 Primary = Clone(value.Primary),
                 Secondary = Clone(value.Secondary),
-                PlanType = value.PlanType
+                PlanType = value.PlanType,
+                ReplaceMissingWindows = value.ReplaceMissingWindows
             };
         }
 
@@ -2164,6 +2206,7 @@ namespace CodexRateMonitorNative
             return new WindowUsage
             {
                 UsedPercent = value.UsedPercent,
+                WindowDurationMins = value.WindowDurationMins,
                 ResetsAt = value.ResetsAt
             };
         }
