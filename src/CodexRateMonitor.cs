@@ -52,11 +52,13 @@ namespace CodexRateMonitorNative
         private readonly NotifyIcon trayIcon;
         private readonly Icon applicationIcon;
         private readonly System.Windows.Forms.Timer timer;
+        private readonly System.Windows.Forms.Timer topmostTimer;
         private readonly AppServerClient appServer;
         private readonly RateSnapshotStabilizer snapshotStabilizer;
         private readonly UpdateChecker updateChecker;
         private ToolStripMenuItem startupItem;
         private ToolStripMenuItem updateItem;
+        private ToolStripMenuItem desktopModeItem;
         private ContextMenuStrip trayMenu;
         private MonitorSettings settings;
         private AppearanceSettingsForm appearanceForm;
@@ -75,6 +77,7 @@ namespace CodexRateMonitorNative
             DiagnosticLog.Write("monitor-start", "version=" + BuildVersion.Value);
             I18n.SetLanguage(settings.Language);
             overlay = new OverlayForm(settings);
+            overlay.DesktopLayoutChanged += OnDesktopLayoutChanged;
             IntPtr ignored = overlay.Handle;
 
             appServer = new AppServerClient();
@@ -99,6 +102,17 @@ namespace CodexRateMonitorNative
             timer.Tick += OnTimerTick;
             timer.Start();
 
+            // Dedicated high-frequency timer that only re-asserts the desktop
+            // overlay's topmost slot. SetWindowPos(TOPMOST, NOMOVE|NOSIZE|
+            // NOACTIVATE) is a no-redraw, no-activate z-order tweak costing
+            // microseconds, so running it at 50ms (20 Hz) keeps the overlay
+            // above the shell taskbar with imperceptible recovery latency and
+            // negligible CPU. It self-no-ops outside desktop mode.
+            topmostTimer = new System.Windows.Forms.Timer();
+            topmostTimer.Interval = 50;
+            topmostTimer.Tick += delegate { overlay.ReassertTopmost(); };
+            topmostTimer.Start();
+
             if (showSettings)
                 ShowAppearanceSettings();
         }
@@ -119,6 +133,10 @@ namespace CodexRateMonitorNative
             var bottomItem = new ToolStripMenuItem(I18n.T("BottomPosition"));
             bottomItem.Click += delegate { SetPosition("bottom-right"); };
             menu.Items.Add(bottomItem);
+            desktopModeItem = new ToolStripMenuItem(I18n.T("DesktopFloatingMode"));
+            desktopModeItem.Checked = settings.OverlayMode == "desktop";
+            desktopModeItem.Click += delegate { SetOverlayMode(settings.OverlayMode == "desktop" ? "attach" : "desktop"); };
+            menu.Items.Add(desktopModeItem);
             menu.Items.Add(new ToolStripSeparator());
             startupItem = new ToolStripMenuItem(I18n.T("Startup"));
             startupItem.Checked = IsStartupEnabled();
@@ -143,19 +161,34 @@ namespace CodexRateMonitorNative
         private void OnTimerTick(object sender, EventArgs e)
         {
             DiagnosticLog.CleanupIfDue();
-            IntPtr desktopWindow = WindowLocator.FindForegroundDesktopMainWindow();
-            bool desktopIsForeground = desktopWindow != IntPtr.Zero &&
-                                       !NativeMethods.IsIconic(desktopWindow);
 
-            if (desktopIsForeground)
+            if (settings.OverlayMode == "desktop")
             {
-                overlay.AttachTo(desktopWindow);
-                if (!appServer.IsRunning)
+                // Desktop mode floats independently of the ChatGPT/Codex window:
+                // it never hides when switching apps, but still polls usage as
+                // long as a Codex desktop client is running in the background.
+                overlay.EnsureDesktopVisible();
+                // Topmost re-assertion is handled by the dedicated 50ms
+                // topmostTimer, not here, for tighter recovery latency.
+                if (!appServer.IsRunning && WindowLocator.FindDesktopMainWindow() != IntPtr.Zero)
                     StartAppServer();
             }
             else
             {
-                overlay.Hide();
+                IntPtr desktopWindow = WindowLocator.FindForegroundDesktopMainWindow();
+                bool desktopIsForeground = desktopWindow != IntPtr.Zero &&
+                                           !NativeMethods.IsIconic(desktopWindow);
+
+                if (desktopIsForeground)
+                {
+                    overlay.AttachTo(desktopWindow);
+                    if (!appServer.IsRunning)
+                        StartAppServer();
+                }
+                else
+                {
+                    overlay.Hide();
+                }
             }
 
             if (appServer.IsInitialized &&
@@ -445,6 +478,26 @@ namespace CodexRateMonitorNative
             overlay.ApplySettings(settings);
         }
 
+        private void SetOverlayMode(string mode)
+        {
+            settings.OverlayMode = mode;
+            settings.Save();
+            if (desktopModeItem != null)
+                desktopModeItem.Checked = mode == "desktop";
+            overlay.ApplySettings(settings);
+            if (mode == "desktop")
+                overlay.ShowDesktop();
+            else
+                overlay.Hide();
+        }
+
+        private void OnDesktopLayoutChanged(int x, int y)
+        {
+            settings.DesktopX = x;
+            settings.DesktopY = y;
+            settings.Save();
+        }
+
         private void ReloadSettings()
         {
             settings = MonitorSettings.Load();
@@ -540,6 +593,8 @@ namespace CodexRateMonitorNative
             DiagnosticLog.Write("monitor-stop", null);
             timer.Stop();
             timer.Dispose();
+            topmostTimer.Stop();
+            topmostTimer.Dispose();
             trayIcon.Visible = false;
             trayIcon.Dispose();
             updateChecker.Dispose();
@@ -563,6 +618,15 @@ namespace CodexRateMonitorNative
         private RateSnapshot snapshot;
         private string status = I18n.T("Connecting");
         private bool updateAvailable;
+
+        private string overlayMode = "attach";
+        private bool dragging;
+        private Point dragOffset;
+
+        // Raised when the user finishes dragging the desktop overlay so the
+        // context can persist the new position. The overlay is always topmost
+        // in desktop mode (no pin toggle anymore).
+        public event Action<int, int> DesktopLayoutChanged;
 
         public OverlayForm(MonitorSettings initialSettings)
         {
@@ -591,7 +655,12 @@ namespace CodexRateMonitorNative
                 const int WS_EX_TOOLWINDOW = 0x80;
                 const int WS_EX_NOACTIVATE = 0x08000000;
                 CreateParams cp = base.CreateParams;
-                cp.ExStyle |= WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+                cp.ExStyle |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+                // Attach mode is click-through so it never steals focus from the
+                // ChatGPT/Codex window. Desktop mode needs mouse interaction for
+                // the pin button and dragging, so it drops WS_EX_TRANSPARENT.
+                if (overlayMode != "desktop")
+                    cp.ExStyle |= WS_EX_TRANSPARENT;
                 return cp;
             }
         }
@@ -599,15 +668,28 @@ namespace CodexRateMonitorNative
         public void ApplySettings(MonitorSettings value)
         {
             settings = value;
+            string newMode = string.IsNullOrEmpty(value.OverlayMode) ? "desktop" : value.OverlayMode;
+            bool modeChanged = overlayMode != newMode;
+            overlayMode = newMode;
+
+            if (modeChanged)
+            {
+                dragging = false;
+                RecreateHandle();
+            }
+
             Opacity = settings.Style.Opacity;
-            int width = (int)Math.Round(
-                (settings.Position == "bottom-right" ? DrawingHelpers.BottomRightWidth : 470) *
-                settings.Style.Scale);
+            int baseWidth = (settings.DisplayLines == "2"
+                ? DrawingHelpers.BottomRightWidth : 470);
+            int width = (int)Math.Round(baseWidth * settings.Style.Scale);
             int height = (int)Math.Round(
-                (settings.Position == "bottom-right" ? DrawingHelpers.BottomRightHeight : 40) *
+                (settings.DisplayLines == "2" ? DrawingHelpers.BottomRightHeight : 40) *
                 settings.Style.Scale);
             Size = new Size(width, height);
             UpdateRegion();
+
+            if (overlayMode == "desktop" && Visible)
+                ShowDesktop();
             Invalidate();
         }
 
@@ -674,6 +756,162 @@ namespace CodexRateMonitorNative
                 NativeMethods.ShowWindow(Handle, NativeMethods.SW_SHOWNOACTIVATE);
         }
 
+        // ---- Desktop floating mode ----
+
+        public void EnsureDesktopVisible()
+        {
+            if (overlayMode != "desktop")
+                return;
+            if (!Visible)
+                ShowDesktop();
+        }
+
+        public void ShowDesktop()
+        {
+            if (overlayMode != "desktop")
+                return;
+            // Only resolve/assign the location the first time the window is made
+            // visible. Once it is on screen (e.g. dragged to a custom spot), later
+            // calls — triggered by live preview, save, or style reload from the
+            // settings form — must only re-assert topmost, never reposition. This
+            // keeps a user-placed desktop window pinned where they left it.
+            if (!Visible)
+                Location = ResolveDesktopLocation();
+            if (!Visible)
+                NativeMethods.ShowWindow(Handle, NativeMethods.SW_SHOWNOACTIVATE);
+            BringToFront();
+            Invalidate();
+        }
+
+        // The desktop overlay is always topmost so it can cover the shell
+        // taskbar (which is itself topmost). Re-asserted every 50ms by the
+        // dedicated topmostTimer to stay locked above the taskbar at all times,
+        // like desktop lyric overlays.
+        private void BringToFront()
+        {
+            NativeMethods.SetWindowPos(
+                Handle,
+                NativeMethods.HWND_TOPMOST,
+                0, 0, 0, 0,
+                NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE |
+                NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
+        }
+
+        public void ReassertTopmost()
+        {
+            if (overlayMode != "desktop" || !Visible)
+                return;
+            BringToFront();
+        }
+
+        private void SaveDesktopLocation()
+        {
+            var handler = DesktopLayoutChanged;
+            if (handler != null)
+                handler(Location.X, Location.Y);
+        }
+
+        private Point ResolveDesktopLocation()
+        {
+            Point desired;
+            if ((settings.DesktopX != 0 || settings.DesktopY != 0) &&
+                IsLocationOnScreen(new Point(settings.DesktopX, settings.DesktopY)))
+            {
+                desired = new Point(settings.DesktopX, settings.DesktopY);
+            }
+            else
+            {
+                // Default to bottom-center of the primary screen's working area
+                // (just above the taskbar) — a natural spot for a status strip,
+                // instead of the top-right corner.
+                Rectangle area = Screen.PrimaryScreen != null
+                    ? Screen.PrimaryScreen.WorkingArea
+                    : Screen.GetBounds(Point.Empty);
+                desired = new Point(
+                    area.Left + (area.Width - Width) / 2,
+                    area.Bottom - Height - 16);
+            }
+            // Clamp to the full screen bounds (which includes the taskbar region) so the
+            // overlay can be parked on top of the taskbar; it only prevents the
+            // overlay from being dragged completely off-screen. Covering the
+            // taskbar is intentional — both states are topmost.
+            return ClampLocationToScreen(desired);
+        }
+
+        private Point ClampLocationToScreen(Point desired)
+        {
+            Rectangle area = Screen.PrimaryScreen != null
+                ? Screen.PrimaryScreen.Bounds
+                : Screen.GetBounds(Point.Empty);
+            foreach (Screen screen in Screen.AllScreens)
+            {
+                if (screen.Bounds.Contains(desired))
+                {
+                    area = screen.Bounds;
+                    break;
+                }
+            }
+            int x = Math.Max(area.Left, Math.Min(desired.X, area.Right - Width));
+            int y = Math.Max(area.Top, Math.Min(desired.Y, area.Bottom - Height));
+            return new Point(x, y);
+        }
+
+        private static bool IsLocationOnScreen(Point location)
+        {
+            // Use the full screen bounds (which include the taskbar region), not
+            // WorkingArea. The desktop overlay is intentionally allowed to sit on
+            // top of the taskbar, so a saved position there must be treated as
+            // valid instead of being discarded and reset to the default.
+            foreach (Screen screen in Screen.AllScreens)
+            {
+                if (screen.Bounds.Contains(location))
+                    return true;
+            }
+            return false;
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (overlayMode != "desktop")
+                return;
+            // The whole overlay is draggable in desktop mode (no pin button).
+            dragging = true;
+            dragOffset = new Point(
+                Control.MousePosition.X - Location.X,
+                Control.MousePosition.Y - Location.Y);
+            Capture = true;
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            if (overlayMode != "desktop")
+                return;
+            Cursor = Cursors.SizeAll;
+            if (dragging)
+            {
+                Point raw = new Point(
+                    Control.MousePosition.X - dragOffset.X,
+                    Control.MousePosition.Y - dragOffset.Y);
+                // Keep the overlay on screen (it may sit over the taskbar by design).
+                Location = ClampLocationToScreen(raw);
+            }
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (overlayMode != "desktop")
+                return;
+            if (dragging)
+            {
+                dragging = false;
+                Capture = false;
+                SaveDesktopLocation();
+            }
+        }
+
         private void UpdateRegion()
         {
             if (Width <= 0 || Height <= 0)
@@ -698,6 +936,12 @@ namespace CodexRateMonitorNative
             float scale = (float)settings.Style.Scale;
             g.ScaleTransform(scale, scale);
 
+            float areaW = Width / scale;
+            float areaH = Height / scale;
+            float cardW = areaW;
+            float cardH = areaH;
+            float radius = (float)settings.Style.CornerRadius;
+
             Color outer = ColorTools.Parse(settings.Style.Background);
             Color border = ColorTools.Parse(settings.Style.Border);
             Color card = ColorTools.Parse(settings.Style.CardBackground);
@@ -708,15 +952,14 @@ namespace CodexRateMonitorNative
             using (var outerBrush = new SolidBrush(outer))
             using (var borderPen = new Pen(border, 1f))
             using (GraphicsPath outerPath = DrawingHelpers.RoundRect(
-                new RectangleF(0.5f, 0.5f,
-                    (Width / scale) - 1f, (Height / scale) - 1f),
-                (float)settings.Style.CornerRadius))
+                new RectangleF(0.5f, 0.5f, cardW - 1f, cardH - 1f),
+                radius))
             {
                 g.FillPath(outerBrush, outerPath);
                 g.DrawPath(borderPen, outerPath);
             }
 
-            if (settings.Position == "bottom-right")
+            if (settings.DisplayLines == "2")
             {
                 DrawCard(g, DrawingHelpers.GetBottomRightCardBounds(true),
                     true, card, text, muted, track);
@@ -731,7 +974,7 @@ namespace CodexRateMonitorNative
 
             if (updateAvailable)
             {
-                float right = Width / scale;
+                float right = cardW;
                 using (var borderBrush = new SolidBrush(Color.White))
                 using (var dotBrush = new SolidBrush(Color.FromArgb(232, 67, 67)))
                 {
@@ -1899,20 +2142,32 @@ namespace CodexRateMonitorNative
         public string Language { get; set; }
         public string Position { get; set; }
         public string UsageDisplay { get; set; }
+
+        // "1" = single horizontal row; "2" = two stacked rows. Decoupled from
+        // Position so the corner placement and the line count are independent.
+        public string DisplayLines { get; set; }
         public int RefreshSeconds { get; set; }
         public bool DiagnosticsEnabled { get; set; }
         public int DiagnosticRetentionDays { get; set; }
         public StyleSettings Style { get; set; }
 
+        // "attach" follows the ChatGPT/Codex window; "desktop" floats on the
+        // Windows desktop and is always topmost (covers the taskbar).
+        public string OverlayMode { get; set; }
+        public int DesktopX { get; set; }
+        public int DesktopY { get; set; }
+
         public MonitorSettings()
         {
             Language = "auto";
             Position = "top";
+            DisplayLines = "1";
             UsageDisplay = "remaining";
             RefreshSeconds = 60;
             DiagnosticsEnabled = true;
             DiagnosticRetentionDays = 7;
             Style = new StyleSettings();
+            OverlayMode = "desktop";
         }
 
         public static string SettingsPath
@@ -1958,10 +2213,14 @@ namespace CodexRateMonitorNative
             clone.Language = Language;
             clone.Position = Position;
             clone.UsageDisplay = UsageDisplay;
+            clone.DisplayLines = DisplayLines;
             clone.RefreshSeconds = RefreshSeconds;
             clone.DiagnosticsEnabled = DiagnosticsEnabled;
             clone.DiagnosticRetentionDays = DiagnosticRetentionDays;
             clone.Style = Style == null ? new StyleSettings() : Style.Clone();
+            clone.OverlayMode = OverlayMode;
+            clone.DesktopX = DesktopX;
+            clone.DesktopY = DesktopY;
             clone.Normalize();
             return clone;
         }
@@ -1969,10 +2228,12 @@ namespace CodexRateMonitorNative
         private void Normalize()
         {
             Language = I18n.NormalizeSetting(Language);
-            if (Position == "bottom-left")
-                Position = "bottom-right";
             if (Position != "top" && Position != "bottom-right")
                 Position = "top";
+            if (DisplayLines != "1" && DisplayLines != "2")
+                DisplayLines = "1";
+            if (OverlayMode != "attach" && OverlayMode != "desktop")
+                OverlayMode = "desktop";
             UsageDisplay = UsageDisplayTools.Normalize(UsageDisplay);
             RefreshSeconds = Math.Max(30, Math.Min(900, RefreshSeconds));
             DiagnosticRetentionDays = Math.Max(1, Math.Min(30, DiagnosticRetentionDays));
@@ -2372,6 +2633,7 @@ namespace CodexRateMonitorNative
             path.CloseFigure();
             return path;
         }
+
     }
 
     internal static class ColorTools
@@ -2411,6 +2673,9 @@ namespace CodexRateMonitorNative
         internal delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
         internal static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+        internal static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
+        internal const uint SWP_NOSIZE = 0x0001;
+        internal const uint SWP_NOMOVE = 0x0002;
         internal const uint SWP_NOACTIVATE = 0x0010;
         internal const uint SWP_SHOWWINDOW = 0x0040;
         internal const int SW_SHOWNOACTIVATE = 4;

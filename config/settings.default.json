@@ -1,6 +1,10 @@
 {
   "Language": "auto",
   "Position": "top",
+  "DisplayLines": "1",
+  "OverlayMode": "desktop",
+  "DesktopX": 0,
+  "DesktopY": 0,
   "UsageDisplay": "remaining",
   "RefreshSeconds": 60,
   "DiagnosticsEnabled": true,

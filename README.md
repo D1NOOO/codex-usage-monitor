@@ -45,6 +45,11 @@ instance, then start this build again and bring ChatGPT/Codex to the foreground.
 - Two overlay positions:
   - bottom-right;
   - centered in the top title bar.
+- Two overlay modes:
+  - desktop (default) floats independently on the Windows desktop and is always
+    on top (covers the taskbar, like desktop lyrics). The overlay can be dragged
+    and its position is remembered.
+  - attach follows the foreground ChatGPT/Codex window;
 - Lives in the Windows notification area without a console window.
 - Click-through overlay: it does not steal focus or block ChatGPT/Codex controls.
 - Appearance editor with live preview:
@@ -110,6 +115,7 @@ Right-click the notification-area icon:
 | Appearance settings | Opens the visual editor and live preview. |
 | Top title bar | Uses the compact horizontal overlay. |
 | Bottom-right | Uses the larger two-row overlay in the lower-right corner. |
+| Desktop floating mode | Detaches the overlay from ChatGPT/Codex so it floats on the Windows desktop, always on top (covers the taskbar, like desktop lyrics). Drag the overlay to reposition; its position is remembered. |
 | Start with Windows | Adds/removes a current-user startup registry value. |
 | Exit | Stops the monitor and the app-server process it launched. |
 
@@ -232,6 +238,8 @@ Important fields:
 |---|---|
 | `Language` | `auto`, `zh-CN`, `zh-TW`, `en` |
 | `Position` | `top` (default), `bottom-right` (`bottom-left` is migrated automatically) |
+| `OverlayMode` | `desktop` (default) floats on the Windows desktop (always on top); `attach` follows the ChatGPT/Codex window |
+| `DesktopX` / `DesktopY` | remembered desktop overlay position (0,0 uses the default top-right spot) |
 | `UsageDisplay` | `remaining` (default), `used` |
 | `RefreshSeconds` | 30–900 |
 | `DiagnosticsEnabled` | `true` (default), `false` |

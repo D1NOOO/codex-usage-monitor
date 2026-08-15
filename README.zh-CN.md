@@ -35,6 +35,10 @@ ChatGPT/Codex 切到前台。
 - 默认显示 5 小时与 7 天窗口的剩余百分比，也可切换为显示已用。
 - 进度条长度及警告/危险颜色会随显示模式同步变化。
 - 支持右下角、顶部标题栏两种位置。
+- 支持两种悬浮模式：
+  - 吸附模式（默认）跟随前台的 ChatGPT/Codex 窗口，切到其他应用时自动隐藏；
+  - 桌面悬浮模式脱离客户端，独立漂浮在 Windows 桌面上，不会因切换应用而隐藏，
+    且始终置顶（覆盖任务栏，类似桌面歌词）。可拖拽移动位置，位置会被记住。
 - 原生 GUI EXE，无 CMD、Node 或 PowerShell 包装窗口。
 - 悬浮条不抢焦点，鼠标点击会穿透到 ChatGPT/Codex。
 - 完整外观设置：字体、字号、缩放、透明度、圆角、颜色和浅色/深色预设。
@@ -75,7 +79,7 @@ ChatGPT/Codex 切到前台。
 当前发布的 EXE 未进行商业代码签名，SmartScreen 可能提示未知发布者。
 请只从本仓库 Release 下载，并校验 SHA256 或 GitHub 构建来源证明。
 
-右击托盘图标可刷新、检测更新、切换位置、打开外观设置、设置开机启动或退出。
+右击托盘图标可刷新、检测更新、切换位置、切换桌面悬浮模式、打开外观设置、设置开机启动或退出。
 双击托盘图标直接打开外观设置。
 
 ### 软件更新
@@ -170,6 +174,8 @@ Release 中的 `settings.json` 来自隐私安全的
 |---|---|
 | `Language` | `auto`、`zh-CN`、`zh-TW`、`en` |
 | `Position` | `top`（默认）、`bottom-right`（旧的 `bottom-left` 会自动迁移） |
+| `OverlayMode` | `desktop`（默认）桌面悬浮模式（始终置顶）；`attach` 吸附 ChatGPT/Codex 窗口 |
+| `DesktopX` / `DesktopY` | 记忆的桌面悬浮位置（0,0 时使用默认的右上角位置） |
 | `UsageDisplay` | `remaining`（默认）、`used` |
 | `RefreshSeconds` | 30–900 |
 | `DiagnosticsEnabled` | `true`（默认）、`false` |

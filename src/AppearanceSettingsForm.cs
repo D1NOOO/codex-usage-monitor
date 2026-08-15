@@ -24,7 +24,13 @@ namespace CodexRateMonitorNative
         private readonly RadioButton topPosition;
         private readonly RadioButton showRemaining;
         private readonly RadioButton showUsed;
+        private readonly RadioButton desktopModeRadio;
+        private readonly RadioButton attachModeRadio;
+        private readonly RadioButton oneLineRadio;
+        private readonly RadioButton twoLinesRadio;
         private readonly ComboBox language;
+        private GroupBox positionGroup;
+        private TableLayoutPanel positionLinesRow;
         private readonly ComboBox fontFamily;
         private readonly NumericUpDown fontSize;
         private readonly NumericUpDown resetFontSize;
@@ -51,8 +57,8 @@ namespace CodexRateMonitorNative
             MinimizeBox = false;
             ShowInTaskbar = true;
             AutoScaleMode = AutoScaleMode.None;
-            ClientSize = new Size(820, 790);
-            MinimumSize = new Size(760, 720);
+            ClientSize = new Size(820, 950);
+            MinimumSize = new Size(760, 900);
             Font = CreateUiFont(9.5f);
             BackColor = Color.FromArgb(246, 247, 249);
 
@@ -61,16 +67,17 @@ namespace CodexRateMonitorNative
             root.AutoScroll = false;
             root.Padding = new Padding(20, 16, 20, 14);
             root.ColumnCount = 1;
-            root.RowCount = 7;
+            root.RowCount = 9;
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));
-            // Give the two display-option rows enough baseline separation at 100–125% DPI.
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 124));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 184));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 180));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));   // 0 header
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 140));  // 1 preview
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));   // 2 display mode (full width)
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));   // 3 display position + display lines (side-by-side)
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));   // 4 progress + language (side-by-side)
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 188));  // 5 typography
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 176));  // 6 colors
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));   // 7 hint
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));   // 8 buttons
             Controls.Add(root);
 
             root.Controls.Add(BuildHeader(), 0, 0);
@@ -91,6 +98,17 @@ namespace CodexRateMonitorNative
             topPosition.AutoSize = true;
             topPosition.Margin = new Padding(4, 4, 18, 0);
             topPosition.CheckedChanged += ControlChanged;
+
+            oneLineRadio = new RadioButton();
+            oneLineRadio.Text = I18n.T("OneLine");
+            oneLineRadio.AutoSize = true;
+            oneLineRadio.Margin = new Padding(4, 3, 18, 0);
+            oneLineRadio.CheckedChanged += ControlChanged;
+            twoLinesRadio = new RadioButton();
+            twoLinesRadio.Text = I18n.T("TwoLines");
+            twoLinesRadio.AutoSize = true;
+            twoLinesRadio.Margin = new Padding(0, 3, 0, 0);
+            twoLinesRadio.CheckedChanged += ControlChanged;
 
             showRemaining = new RadioButton();
             showRemaining.Text = I18n.T("ShowRemaining");
@@ -114,58 +132,98 @@ namespace CodexRateMonitorNative
             language.Items.Add(new LanguageOption("en", "English"));
             language.SelectedIndexChanged += ControlChanged;
 
-            var languageLabel = new Label();
-            languageLabel.Text = I18n.T("Language");
-            languageLabel.AutoSize = true;
-            languageLabel.Margin = new Padding(4, 7, 0, 0);
+            // ---- Display mode: occupies its own full-width row on row 2. ----
+            var modeGroup = CreateGroup(I18n.T("DisplayMode"));
+            var modePanel = new FlowLayoutPanel();
+            modePanel.Dock = DockStyle.Fill;
+            modePanel.WrapContents = false;
+            modePanel.Padding = new Padding(4, 6, 4, 4);
+            desktopModeRadio = new RadioButton();
+            desktopModeRadio.Text = I18n.T("DesktopFloatingMode");
+            desktopModeRadio.AutoSize = true;
+            desktopModeRadio.Margin = new Padding(4, 2, 22, 0);
+            desktopModeRadio.CheckedChanged += ControlChanged;
+            attachModeRadio = new RadioButton();
+            attachModeRadio.Text = I18n.T("WindowAttachMode");
+            attachModeRadio.AutoSize = true;
+            attachModeRadio.Margin = new Padding(0, 2, 0, 0);
+            attachModeRadio.CheckedChanged += ControlChanged;
+            modePanel.Controls.Add(desktopModeRadio);
+            modePanel.Controls.Add(attachModeRadio);
+            modeGroup.Controls.Add(modePanel);
+            root.Controls.Add(modeGroup, 0, 2);
 
-            var positionGroup = CreateGroup(I18n.T("DisplaySettings"));
-            var displayLayout = new TableLayoutPanel();
-            displayLayout.Dock = DockStyle.Fill;
-            displayLayout.Padding = new Padding(2, 2, 2, 0);
-            displayLayout.ColumnCount = 3;
-            displayLayout.RowCount = 2;
-            displayLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
-            displayLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
-            displayLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
-            displayLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-            displayLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            // ---- Display position + Display lines: side-by-side on row 3 using two
+            // distinct GroupBox containers (no divider line). When desktop floating
+            // mode is selected, the position column collapses to 0% and the lines
+            // group expands to fill the full row, so the row height stays fixed and
+            // nothing gets clipped.
+            positionLinesRow = new TableLayoutPanel();
+            positionLinesRow.Dock = DockStyle.Fill;
+            // Outer margin is zero by design: the inner GroupBoxes already carry
+            // their own 10px bottom margin, and stacking another 10px here would
+            // squeeze the radio buttons again.
+            positionLinesRow.Margin = Padding.Empty;
+            positionLinesRow.ColumnCount = 2;
+            positionLinesRow.RowCount = 1;
+            positionLinesRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            positionLinesRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            positionLinesRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-            var positionLabel = new Label();
-            positionLabel.Text = I18n.T("DisplayPosition");
-            positionLabel.Dock = DockStyle.Fill;
-            positionLabel.TextAlign = ContentAlignment.MiddleRight;
-            displayLayout.Controls.Add(positionLabel, 0, 0);
+            positionGroup = CreateGroup(I18n.T("DisplayPosition"));
+            var positionPanel = new FlowLayoutPanel();
+            positionPanel.Dock = DockStyle.Fill;
+            positionPanel.WrapContents = false;
+            positionPanel.Padding = new Padding(4, 6, 4, 4);
+            positionPanel.Controls.Add(topPosition);
+            positionPanel.Controls.Add(bottomPosition);
+            positionGroup.Controls.Add(positionPanel);
+            positionLinesRow.Controls.Add(positionGroup, 0, 0);
 
-            var positionFlow = new FlowLayoutPanel();
-            positionFlow.Dock = DockStyle.Fill;
-            positionFlow.WrapContents = false;
-            positionFlow.Controls.Add(topPosition);
-            positionFlow.Controls.Add(bottomPosition);
-            displayLayout.Controls.Add(positionFlow, 1, 0);
+            var linesGroup = CreateGroup(I18n.T("DisplayLines"));
+            var linesPanel = new FlowLayoutPanel();
+            linesPanel.Dock = DockStyle.Fill;
+            linesPanel.WrapContents = false;
+            linesPanel.Padding = new Padding(4, 6, 4, 4);
+            linesPanel.Controls.Add(oneLineRadio);
+            linesPanel.Controls.Add(twoLinesRadio);
+            linesGroup.Controls.Add(linesPanel);
+            positionLinesRow.Controls.Add(linesGroup, 1, 0);
 
-            var languageFlow = new FlowLayoutPanel();
-            languageFlow.Dock = DockStyle.Fill;
-            languageFlow.WrapContents = false;
-            languageFlow.Controls.Add(languageLabel);
-            languageFlow.Controls.Add(language);
-            displayLayout.Controls.Add(languageFlow, 2, 0);
+            root.Controls.Add(positionLinesRow, 0, 3);
 
-            var progressLabel = new Label();
-            progressLabel.Text = I18n.T("ProgressDisplay");
-            progressLabel.Dock = DockStyle.Fill;
-            progressLabel.TextAlign = ContentAlignment.MiddleRight;
-            displayLayout.Controls.Add(progressLabel, 0, 1);
+            // ---- Progress display + Language: side-by-side in a single row ----
+            var progressLangRow = new TableLayoutPanel();
+            progressLangRow.Dock = DockStyle.Fill;
+            // Outer margin must be zero here, otherwise it stacks on top of the
+            // GroupBox children's own 10px bottom margin and squeezes the radios.
+            progressLangRow.Margin = Padding.Empty;
+            progressLangRow.ColumnCount = 2;
+            progressLangRow.RowCount = 1;
+            progressLangRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            progressLangRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            progressLangRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-            var progressFlow = new FlowLayoutPanel();
-            progressFlow.Dock = DockStyle.Fill;
-            progressFlow.WrapContents = false;
-            progressFlow.Controls.Add(showRemaining);
-            progressFlow.Controls.Add(showUsed);
-            displayLayout.Controls.Add(progressFlow, 1, 1);
+            var progressGroup = CreateGroup(I18n.T("ProgressDisplay"));
+            var progressPanel = new FlowLayoutPanel();
+            progressPanel.Dock = DockStyle.Fill;
+            progressPanel.WrapContents = false;
+            progressPanel.Padding = new Padding(4, 6, 4, 4);
+            progressPanel.Controls.Add(showRemaining);
+            progressPanel.Controls.Add(showUsed);
+            progressGroup.Controls.Add(progressPanel);
+            progressLangRow.Controls.Add(progressGroup, 0, 0);
 
-            positionGroup.Controls.Add(displayLayout);
-            root.Controls.Add(positionGroup, 0, 2);
+            var languageGroup = CreateGroup(I18n.T("Language"));
+            var languagePanel = new FlowLayoutPanel();
+            languagePanel.Dock = DockStyle.Fill;
+            languagePanel.WrapContents = false;
+            languagePanel.Padding = new Padding(4, 6, 4, 4);
+            languagePanel.Controls.Add(language);
+            languageGroup.Controls.Add(languagePanel);
+            progressLangRow.Controls.Add(languageGroup, 1, 0);
+
+            root.Controls.Add(progressLangRow, 0, 4);
 
             fontFamily = new ComboBox();
             fontFamily.DropDownStyle = ComboBoxStyle.DropDown;
@@ -181,8 +239,8 @@ namespace CodexRateMonitorNative
                         StringComparer.OrdinalIgnoreCase);
                     string[] preferred =
                     {
-                        "Microsoft JhengHei UI",
                         "Microsoft YaHei UI",
+                        "Microsoft JhengHei UI",
                         "Segoe UI",
                         "Arial",
                         "Calibri",
@@ -217,20 +275,20 @@ namespace CodexRateMonitorNative
 
             var typographyGroup = CreateGroup(I18n.T("Typography"));
             typographyGroup.Controls.Add(BuildTypographyTable());
-            root.Controls.Add(typographyGroup, 0, 3);
+            root.Controls.Add(typographyGroup, 0, 5);
 
             var colorsGroup = CreateGroup(I18n.T("Colors"));
             colorsGroup.Controls.Add(BuildColorsPanel());
-            root.Controls.Add(colorsGroup, 0, 4);
+            root.Controls.Add(colorsGroup, 0, 6);
 
             var hint = new Label();
             hint.Dock = DockStyle.Fill;
             hint.TextAlign = ContentAlignment.MiddleLeft;
             hint.ForeColor = Color.FromArgb(103, 112, 123);
             hint.Text = I18n.T("SettingsHint");
-            root.Controls.Add(hint, 0, 5);
+            root.Controls.Add(hint, 0, 7);
 
-            root.Controls.Add(BuildButtons(), 0, 6);
+            root.Controls.Add(BuildButtons(), 0, 8);
 
             LoadControls();
             FormClosed += delegate
@@ -274,7 +332,7 @@ namespace CodexRateMonitorNative
             var group = new GroupBox();
             group.Text = title;
             group.Dock = DockStyle.Fill;
-            group.Margin = new Padding(0, 0, 0, 10);
+            group.Margin = new Padding(0, 0, 0, 14);
             group.Padding = new Padding(10, 8, 10, 8);
             group.ForeColor = Color.FromArgb(42, 46, 52);
             return group;
@@ -487,10 +545,14 @@ namespace CodexRateMonitorNative
             loading = true;
             try
             {
-                bottomPosition.Checked = working.Position == "bottom-right";
                 topPosition.Checked = working.Position == "top";
+                bottomPosition.Checked = working.Position == "bottom-right";
+                oneLineRadio.Checked = working.DisplayLines != "2";
+                twoLinesRadio.Checked = working.DisplayLines == "2";
                 showRemaining.Checked = UsageDisplayTools.IsRemaining(working.UsageDisplay);
                 showUsed.Checked = !UsageDisplayTools.IsRemaining(working.UsageDisplay);
+                desktopModeRadio.Checked = working.OverlayMode == "desktop";
+                attachModeRadio.Checked = working.OverlayMode == "attach";
                 string languageCode = I18n.NormalizeSetting(working.Language);
                 for (int i = 0; i < language.Items.Count; i++)
                 {
@@ -515,6 +577,7 @@ namespace CodexRateMonitorNative
             {
                 loading = false;
             }
+            UpdatePositionGroupVisibility();
             Preview();
         }
 
@@ -528,17 +591,45 @@ namespace CodexRateMonitorNative
             if (loading)
                 return;
             UpdateWorking();
+            UpdatePositionGroupVisibility();
             Preview();
+        }
+
+        // The display-position option only applies to window-attach mode. When the
+        // desktop floating mode is selected, hide the position group and collapse
+        // its column to 0% so the display-lines group expands to fill the whole
+        // row. The row itself keeps its fixed height, so nothing gets clipped.
+        private void UpdatePositionGroupVisibility()
+        {
+            bool attach = attachModeRadio != null && attachModeRadio.Checked;
+            if (positionGroup != null)
+                positionGroup.Visible = attach;
+            if (positionLinesRow != null)
+            {
+                if (attach)
+                {
+                    positionLinesRow.ColumnStyles[0].Width = 50;
+                    positionLinesRow.ColumnStyles[1].Width = 50;
+                }
+                else
+                {
+                    positionLinesRow.ColumnStyles[0].Width = 0;
+                    positionLinesRow.ColumnStyles[1].Width = 100;
+                }
+                positionLinesRow.PerformLayout();
+            }
         }
 
         private void UpdateWorking()
         {
             working.Position = bottomPosition.Checked ? "bottom-right" : "top";
+            working.DisplayLines = twoLinesRadio.Checked ? "2" : "1";
             working.UsageDisplay = showUsed.Checked ? "used" : "remaining";
+            working.OverlayMode = desktopModeRadio.Checked ? "desktop" : "attach";
             var selectedLanguage = language.SelectedItem as LanguageOption;
             working.Language = selectedLanguage == null ? "auto" : selectedLanguage.Code;
             working.Style.FontFamily = string.IsNullOrWhiteSpace(fontFamily.Text)
-                ? "Microsoft JhengHei UI"
+                ? "Microsoft YaHei UI"
                 : fontFamily.Text.Trim();
             working.Style.FontSize = (double)fontSize.Value;
             working.Style.ResetFontSize = (double)resetFontSize.Value;
@@ -660,7 +751,7 @@ namespace CodexRateMonitorNative
         {
             try
             {
-                return new Font("Microsoft JhengHei UI", size, style, GraphicsUnit.Point);
+                return new Font("Microsoft YaHei UI", size, style, GraphicsUnit.Point);
             }
             catch
             {
@@ -699,10 +790,10 @@ namespace CodexRateMonitorNative
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
 
-            int baseWidth = settings.Position == "bottom-right"
+            int baseWidth = settings.DisplayLines == "2"
                 ? DrawingHelpers.BottomRightWidth
                 : 470;
-            int baseHeight = settings.Position == "bottom-right"
+            int baseHeight = settings.DisplayLines == "2"
                 ? DrawingHelpers.BottomRightHeight
                 : 40;
             float fit = Math.Min(
@@ -741,7 +832,7 @@ namespace CodexRateMonitorNative
 
             DateTime fiveReset = DateTime.Today.AddDays(1).AddHours(3).AddMinutes(25);
             DateTime sevenReset = DateTime.Today.AddDays(7).AddHours(22).AddMinutes(25);
-            if (settings.Position == "bottom-right")
+            if (settings.DisplayLines == "2")
             {
                 DrawRow(g, DrawingHelpers.GetBottomRightCardBounds(true),
                     I18n.Translate("FiveHour", settings.Language), 35f,
