@@ -59,6 +59,7 @@ namespace CodexRateMonitorNative
         private ToolStripMenuItem startupItem;
         private ToolStripMenuItem updateItem;
         private ToolStripMenuItem desktopModeItem;
+        private ToolStripMenuItem attachModeItem;
         private ContextMenuStrip trayMenu;
         private MonitorSettings settings;
         private AppearanceSettingsForm appearanceForm;
@@ -127,16 +128,14 @@ namespace CodexRateMonitorNative
             menu.Items.Add(updateItem);
             menu.Items.Add(I18n.T("ReloadStyle"), null, delegate { ReloadSettings(); });
             menu.Items.Add(new ToolStripSeparator());
-            var topItem = new ToolStripMenuItem(I18n.T("TopPosition"));
-            topItem.Click += delegate { SetPosition("top"); };
-            menu.Items.Add(topItem);
-            var bottomItem = new ToolStripMenuItem(I18n.T("BottomPosition"));
-            bottomItem.Click += delegate { SetPosition("bottom-right"); };
-            menu.Items.Add(bottomItem);
             desktopModeItem = new ToolStripMenuItem(I18n.T("DesktopFloatingMode"));
             desktopModeItem.Checked = settings.OverlayMode == "desktop";
-            desktopModeItem.Click += delegate { SetOverlayMode(settings.OverlayMode == "desktop" ? "attach" : "desktop"); };
+            desktopModeItem.Click += delegate { SetOverlayMode("desktop"); };
             menu.Items.Add(desktopModeItem);
+            attachModeItem = new ToolStripMenuItem(I18n.T("WindowAttachMode"));
+            attachModeItem.Checked = settings.OverlayMode == "attach";
+            attachModeItem.Click += delegate { SetOverlayMode("attach"); };
+            menu.Items.Add(attachModeItem);
             menu.Items.Add(new ToolStripSeparator());
             startupItem = new ToolStripMenuItem(I18n.T("Startup"));
             startupItem.Checked = IsStartupEnabled();
@@ -484,6 +483,8 @@ namespace CodexRateMonitorNative
             settings.Save();
             if (desktopModeItem != null)
                 desktopModeItem.Checked = mode == "desktop";
+            if (attachModeItem != null)
+                attachModeItem.Checked = mode == "attach";
             overlay.ApplySettings(settings);
             if (mode == "desktop")
                 overlay.ShowDesktop();
@@ -672,6 +673,12 @@ namespace CodexRateMonitorNative
             bool modeChanged = overlayMode != newMode;
             overlayMode = newMode;
 
+            // The rounded region still receives WinForms' background paint at
+            // its antialiased edge. Keep that paint in the same color as the
+            // outer surface so the system control color cannot leak into the
+            // border, especially against dark desktop backgrounds.
+            BackColor = ColorTools.Parse(settings.Style.Background);
+
             if (modeChanged)
             {
                 dragging = false;
@@ -691,6 +698,15 @@ namespace CodexRateMonitorNative
             if (overlayMode == "desktop" && Visible)
                 ShowDesktop();
             Invalidate();
+        }
+
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            // Paint the clipped form region with the theme surface. The outer
+            // path is drawn on top in OnPaint, so this also fills the small
+            // antialiasing gap around the path without a mismatched default
+            // WinForms background color.
+            e.Graphics.Clear(ColorTools.Parse(settings.Style.Background));
         }
 
         public void SetSnapshot(RateSnapshot value)

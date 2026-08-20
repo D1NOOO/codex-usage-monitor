@@ -113,9 +113,8 @@ Right-click the notification-area icon:
 | Check for updates | Checks GitHub Releases and opens the update window when a newer version is available. |
 | Reload style | Reloads `settings.json` from disk. |
 | Appearance settings | Opens the visual editor and live preview. |
-| Top title bar | Uses the compact horizontal overlay. |
-| Bottom-right | Uses the larger two-row overlay in the lower-right corner. |
 | Desktop floating mode | Detaches the overlay from ChatGPT/Codex so it floats on the Windows desktop, always on top (covers the taskbar, like desktop lyrics). Drag the overlay to reposition; its position is remembered. |
+| Window attach mode | Follows the foreground ChatGPT/Codex window and hides when another app is active. |
 | Start with Windows | Adds/removes a current-user startup registry value. |
 | Exit | Stops the monitor and the app-server process it launched. |
 
