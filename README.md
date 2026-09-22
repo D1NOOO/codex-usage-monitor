@@ -45,11 +45,24 @@ instance, then start this build again and bring ChatGPT/Codex to the foreground.
 - Two overlay positions:
   - bottom-right;
   - centered in the top title bar.
+- 1-row and multi-row layouts: the multi-row layout automatically grows an
+  extra card for reset credits and shrinks back when none are available.
 - Two overlay modes:
   - desktop (default) floats independently on the Windows desktop and is always
     on top (covers the taskbar, like desktop lyrics). The overlay can be dragged
     and its position is remembered.
   - attach follows the foreground ChatGPT/Codex window;
+- Reset-credit badge: shows the available rate-limit reset credits and the
+  earliest expiry, with a lifetime bar. Strictly read-only — the monitor
+  never redeems credits. Colors escalate: normal → warning (≤7 days) →
+  danger tint (≤3 days). The badge hides itself when no credits are available.
+- Multi-line tray tooltip: usage title, both windows, and the reset-credit
+  block, one item per line.
+- Long-lived app-server: periodic refreshes use lightweight
+  `account/rateLimits/read` requests plus `account/rateLimits/updated` push
+  notifications instead of restarting the CLI per refresh, keeping background
+  traffic in the KB range. While the ChatGPT/Codex window is minimized, the
+  refresh cadence drops to `MinimizedRefreshSeconds` (default 300s).
 - Lives in the Windows notification area without a console window.
 - Click-through overlay: it does not steal focus or block ChatGPT/Codex controls.
 - Appearance editor with live preview:
@@ -64,7 +77,6 @@ instance, then start this build again and bring ChatGPT/Codex to the foreground.
   release is available.
 - In-app Release notes and checksum-verified, in-place updates that preserve
   the executable path, desktop shortcuts, startup entry, and `settings.json`.
-- No direct access to Codex credential files.
 
 ## Requirements
 
@@ -190,6 +202,26 @@ The monitor renders `primary` as the 5-hour window and `secondary` as the
 `account/rateLimits/updated` notifications and merges them into the last
 snapshot.
 
+The app-server process stays alive for the whole session. Periodic refreshes
+send lightweight `account/rateLimits/read` requests on the same connection and
+merge `account/rateLimits/updated` push notifications; a full child restart
+happens only as a rare resync when reads look pinned. While the ChatGPT/Codex
+window is minimized, the refresh cadence drops to `MinimizedRefreshSeconds`.
+
+### Reset credits
+
+OpenAI grants some plans saveable rate-limit reset credits. When
+`ShowResetCredits` is enabled, the monitor queries the read-only endpoint
+`chatgpt.com/backend-api/wham/rate-limit-reset-credits` using the access token
+from `~/.codex/auth.json` (same machine, same account). It displays the
+available count and the earliest `expires_at`, refreshing every
+`ResetCreditsSeconds` (default 30 minutes).
+
+This is strictly read-only: the monitor never calls credit
+redemption/consumption endpoints. The access token is kept in memory for the
+duration of each request and is never logged, stored, or transmitted anywhere
+else. If the query fails, the badge hides quietly.
+
 The monitor never implements OpenAI authentication. ChatGPT/Codex itself owns
 login, token refresh, and network communication.
 
@@ -205,6 +237,10 @@ login, token refresh, and network communication.
   `%LOCALAPPDATA%\CodexRateMonitor\logs`, with automatic retention cleanup;
 - read this repository's public GitHub Release metadata in the background and,
   only after the user chooses Update, download the Release ZIP and checksum;
+- when `ShowResetCredits` is enabled, read `~/.codex/auth.json` locally to
+  obtain the access token used only for the read-only reset-credit query —
+  the token is held in memory per request and never logged, stored, or sent
+  anywhere else;
 - optionally write:
 
   ```text
@@ -213,8 +249,10 @@ login, token refresh, and network communication.
 
 ### The application does not
 
-- open, parse, copy, upload, or print `auth.json`;
-- store access tokens or account identifiers;
+- store, print, or transmit the access token anywhere beyond the single
+  read-only query described above;
+- call credit redemption/consumption endpoints — reset credits are queried,
+  never redeemed;
 - include telemetry or analytics;
 - require an OpenAI API key;
 - send usage data to a developer-controlled server.
@@ -240,7 +278,10 @@ Important fields:
 | `OverlayMode` | `desktop` (default) floats on the Windows desktop (always on top); `attach` follows the ChatGPT/Codex window |
 | `DesktopX` / `DesktopY` | remembered desktop overlay position (0,0 uses the default top-right spot) |
 | `UsageDisplay` | `remaining` (default), `used` |
-| `RefreshSeconds` | 30–900 |
+| `RefreshSeconds` | 30–900 (visible-window cadence) |
+| `MinimizedRefreshSeconds` | 60–3600 (default 300), cadence while the ChatGPT/Codex window is minimized |
+| `ShowResetCredits` | `true` (default), `false` |
+| `ResetCreditsSeconds` | 300–86400 (default 1800), read-only reset-credit query interval |
 | `DiagnosticsEnabled` | `true` (default), `false` |
 | `DiagnosticRetentionDays` | 1–30 (default: 7) |
 | `Style.Scale` | 0.75–1.50 |
@@ -332,6 +373,7 @@ assets/                 Application icon
 config/                 Privacy-safe default settings
 style-examples/         Optional appearance presets
 scripts/build.ps1       Reproducible local/CI build
+scripts/traffic_monitor.js  Per-host proxy traffic meter (mihomo controller)
 .github/workflows/      CI and Release automation
 SECURITY.md             Private vulnerability reporting policy
 CONTRIBUTING.md         Contribution guide

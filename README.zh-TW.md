@@ -35,10 +35,19 @@ ChatGPT/Codex 切到前景。
 - 預設顯示 5 小時與 7 天視窗的剩餘百分比，也可切換為顯示已用。
 - 進度列長度及警告／危險顏色會隨顯示模式同步變化。
 - 支援右下角、頂部標題列兩種位置。
+- 1 行 / 多行兩種版面：多行版面會在有重置券時自動增加一張卡片，無券時自動收回。
 - 支援兩種浮動模式：
   - 吸附模式（預設）跟隨前台的 ChatGPT/Codex 視窗，切換到其他應用時自動隱藏；
   - 桌面懸浮模式脫離用戶端，獨立漂浮在 Windows 桌面上，不會因切換應用而隱藏，
     且始終置頂（覆蓋工作列，類似桌面歌詞）。可拖曳移動位置，位置會被記住。
+- 重置券卡片：顯示可用的限額重置券數量和最早到期時間，附帶 30 天生命週期進度條。
+  **嚴格唯讀**——只查詢，絕不核銷。顏色分級：正常 → 警告（≤7 天）→ 危險染色（≤3 天）；
+  無券時卡片自動隱藏。
+- 多行通知區域浮動提示：用量標題、雙視窗百分比、重置券資訊分行顯示。
+- 常駐 app-server：週期重新整理使用輕量 `account/rateLimits/read` 請求，
+  並合併 `account/rateLimits/updated` 推送，不再按固定週期重啟 CLI，
+  背景流量保持在 KB 量級。ChatGPT/Codex 視窗最小化時，重新整理自動降頻到
+  `MinimizedRefreshSeconds`（預設 300 秒）。
 - 原生 GUI EXE，沒有 CMD、Node 或 PowerShell 包裝視窗。
 - 浮動列不搶焦點，滑鼠點擊會穿透到 ChatGPT/Codex。
 - 完整外觀設定：字型、字級、縮放、透明度、圓角、顏色及淺色／深色預設。
@@ -46,7 +55,6 @@ ChatGPT/Codex 切到前景。
 - 可從通知區域啟用或停用開機啟動。
 - 在背景檢查 GitHub Release；發現新版本時在通知區域圖示和用量浮動列顯示紅點。
 - 在更新視窗顯示新版本功能，驗證 Release ZIP 後原地更新並保留捷徑、開機啟動項目和 `settings.json`。
-- 不直接讀取任何 Codex 憑據檔案。
 
 ## 執行需求
 
@@ -139,6 +147,21 @@ codex.exe app-server
 程式將 `primary` 呈現為 5 小時視窗，將 `secondary` 呈現為 7 天視窗；
 同時合併 `account/rateLimits/updated` 的稀疏更新。
 
+app-server 程序在整個會話期間保持常駐。週期重新整理只透過同一連線傳送輕量的
+`account/rateLimits/read` 請求，並合併 `account/rateLimits/updated` 推送；
+只有在讀取通道疑似釘死時才會做一次低頻重新同步重啟。ChatGPT/Codex 視窗最小化時，
+重新整理頻率自動降到 `MinimizedRefreshSeconds`。
+
+### 重置券
+
+OpenAI 會向部分方案發放可儲存的限額重置券。啟用 `ShowResetCredits` 後，程式使用
+`~/.codex/auth.json` 中的存取權杖（同機同帳號）查詢唯讀端點
+`chatgpt.com/backend-api/wham/rate-limit-reset-credits`，顯示可用數量和最早的
+`expires_at`，每 `ResetCreditsSeconds`（預設 30 分鐘）重新整理一次。
+
+該查詢**嚴格唯讀**：程式絕不呼叫重置券的核銷／消費端點。存取權杖只在單次請求期間
+存在於記憶體中，不會被記錄、儲存或傳送到其他任何地方。查詢失敗時卡片會安靜地隱藏。
+
 登入、權杖更新及與 OpenAI 的網路通訊全部由 ChatGPT/Codex 負責，本工具不實作驗證。
 
 ## 隱私與安全
@@ -150,13 +173,15 @@ codex.exe app-server
 - 在 `settings.json` 儲存顯示與診斷偏好；
 - 在 `%LOCALAPPDATA%\CodexRateMonitor\logs` 寫入去識別化診斷日誌，並自動清理過期檔案；
 - 在背景讀取本倉庫公開的 GitHub Release 資訊；僅在使用者點擊「更新」後下載 Release ZIP 和驗證檔案；
+- 啟用 `ShowResetCredits` 時，本機讀取 `~/.codex/auth.json` 取得存取權杖，僅用於上述唯讀的
+  重置券查詢——權杖只在單次請求期間存在於記憶體，不會被記錄、儲存或傳送到其他任何地方；
 - 使用者選擇開機啟動時，在
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 寫入一個項目。
 
 本工具不會：
 
-- 開啟、解析、複製、上傳或列印 `auth.json`；
-- 儲存存取權杖或帳戶識別碼；
+- 把存取權杖儲存、列印或傳送到上述唯讀查詢之外的任何地方；
+- 呼叫重置券的核銷／消費端點——重置券只被查詢，絕不被使用；
 - 加入遙測或統計；
 - 要求 OpenAI API Key；
 - 將用量傳送到開發者控制的伺服器。
@@ -177,7 +202,10 @@ Release 中的 `settings.json` 來自隱私安全的
 | `OverlayMode` | `desktop`（預設）桌面懸浮模式（始終置頂）；`attach` 吸附 ChatGPT/Codex 視窗 |
 | `DesktopX` / `DesktopY` | 記憶的桌面懸浮位置（0,0 時使用預設的右上角位置） |
 | `UsageDisplay` | `remaining`（預設）、`used` |
-| `RefreshSeconds` | 30–900 |
+| `RefreshSeconds` | 30–900（視窗可見時的重新整理間隔） |
+| `MinimizedRefreshSeconds` | 60–3600（預設 300），ChatGPT/Codex 視窗最小化時的重新整理間隔 |
+| `ShowResetCredits` | `true`（預設）、`false` |
+| `ResetCreditsSeconds` | 300–86400（預設 1800），重置券唯讀查詢間隔 |
 | `DiagnosticsEnabled` | `true`（預設）、`false` |
 | `DiagnosticRetentionDays` | 1–30（預設 7） |
 | `Style.Scale` | 0.75–1.50 |

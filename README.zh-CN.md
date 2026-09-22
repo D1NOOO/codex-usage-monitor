@@ -35,10 +35,19 @@ ChatGPT/Codex 切到前台。
 - 默认显示 5 小时与 7 天窗口的剩余百分比，也可切换为显示已用。
 - 进度条长度及警告/危险颜色会随显示模式同步变化。
 - 支持右下角、顶部标题栏两种位置。
+- 1 行 / 多行两种布局：多行布局会在有重置券时自动增加一张卡片，无券时自动收回。
 - 支持两种悬浮模式：
   - 吸附模式（默认）跟随前台的 ChatGPT/Codex 窗口，切到其他应用时自动隐藏；
   - 桌面悬浮模式脱离客户端，独立漂浮在 Windows 桌面上，不会因切换应用而隐藏，
     且始终置顶（覆盖任务栏，类似桌面歌词）。可拖拽移动位置，位置会被记住。
+- 重置券卡片：显示可用的限额重置券数量和最早到期时间，附带 30 天生命周期进度条。
+  **严格只读**——只查询，绝不核销。颜色分级：正常 → 警告（≤7 天）→ 危险染色（≤3 天）；
+  无券时卡片自动隐藏。
+- 多行托盘悬浮提示：用量标题、双窗口百分比、重置券信息分行显示。
+- 常驻 app-server：周期刷新使用轻量 `account/rateLimits/read` 请求，
+  并合并 `account/rateLimits/updated` 推送，不再按固定周期重启 CLI，
+  后台流量保持在 KB 量级。ChatGPT/Codex 窗口最小化时，刷新自动降频到
+  `MinimizedRefreshSeconds`（默认 300 秒）。
 - 原生 GUI EXE，无 CMD、Node 或 PowerShell 包装窗口。
 - 悬浮条不抢焦点，鼠标点击会穿透到 ChatGPT/Codex。
 - 完整外观设置：字体、字号、缩放、透明度、圆角、颜色和浅色/深色预设。
@@ -46,7 +55,6 @@ ChatGPT/Codex 切到前台。
 - 可从托盘启用/取消开机启动。
 - 后台检测 GitHub Release；发现新版本时在托盘图标和用量悬浮条显示红点。
 - 在更新窗口展示新版本功能，校验 Release ZIP 后原地更新并保留快捷方式、开机启动项和 `settings.json`。
-- 不直接读取任何 Codex 凭据文件。
 
 ## 运行要求
 
@@ -139,6 +147,21 @@ codex.exe app-server
 程序把 `primary` 渲染为 5 小时窗口，把 `secondary` 渲染为 7 天窗口；
 同时合并 `account/rateLimits/updated` 的稀疏更新。
 
+app-server 进程在整个会话期间保持常驻。周期刷新只通过同一连接发送轻量的
+`account/rateLimits/read` 请求，并合并 `account/rateLimits/updated` 推送；
+只有在读通道疑似钉死时才会做一次低频重同步重启。ChatGPT/Codex 窗口最小化时，
+刷新频率自动降到 `MinimizedRefreshSeconds`。
+
+### 重置券
+
+OpenAI 会向部分套餐发放可存储的限额重置券。启用 `ShowResetCredits` 后，程序使用
+`~/.codex/auth.json` 中的访问令牌（同机同账号）查询只读接口
+`chatgpt.com/backend-api/wham/rate-limit-reset-credits`，显示可用数量和最早的
+`expires_at`，每 `ResetCreditsSeconds`（默认 30 分钟）刷新一次。
+
+该查询**严格只读**：程序绝不调用重置券的核销/消费接口。访问令牌只在单次请求期间
+保存在内存中，不会被记录、存储或发送到其他任何地方。查询失败时卡片会安静地隐藏。
+
 登录、令牌刷新和与 OpenAI 的网络通信全部由 ChatGPT/Codex 负责，本工具不实现认证。
 
 ## 隐私与安全
@@ -150,13 +173,15 @@ codex.exe app-server
 - 在 `settings.json` 保存显示和诊断偏好；
 - 在 `%LOCALAPPDATA%\CodexRateMonitor\logs` 写入脱敏诊断日志，并自动清理过期文件；
 - 在后台读取本仓库公开的 GitHub Release 信息；仅在用户点击“更新”后下载 Release ZIP 和校验文件；
+- 启用 `ShowResetCredits` 时，本地读取 `~/.codex/auth.json` 获取访问令牌，仅用于上述只读的
+  重置券查询——令牌只在单次请求期间存在于内存，不会被记录、存储或发送到其他任何地方；
 - 用户选择开机启动时，在
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 写入一项。
 
 本工具不会：
 
-- 打开、解析、复制、上传或打印 `auth.json`；
-- 保存访问令牌或账户标识；
+- 把访问令牌存储、打印或发送到上述只读查询之外的任何地方；
+- 调用重置券的核销/消费接口——重置券只被查询，绝不被使用；
 - 加入遥测或统计；
 - 要求 OpenAI API Key；
 - 把用量发给开发者控制的服务器。
@@ -177,7 +202,10 @@ Release 中的 `settings.json` 来自隐私安全的
 | `OverlayMode` | `desktop`（默认）桌面悬浮模式（始终置顶）；`attach` 吸附 ChatGPT/Codex 窗口 |
 | `DesktopX` / `DesktopY` | 记忆的桌面悬浮位置（0,0 时使用默认的右上角位置） |
 | `UsageDisplay` | `remaining`（默认）、`used` |
-| `RefreshSeconds` | 30–900 |
+| `RefreshSeconds` | 30–900（窗口可见时的刷新间隔） |
+| `MinimizedRefreshSeconds` | 60–3600（默认 300），ChatGPT/Codex 窗口最小化时的刷新间隔 |
+| `ShowResetCredits` | `true`（默认）、`false` |
+| `ResetCreditsSeconds` | 300–86400（默认 1800），重置券只读查询间隔 |
 | `DiagnosticsEnabled` | `true`（默认）、`false` |
 | `DiagnosticRetentionDays` | 1–30（默认 7） |
 | `Style.Scale` | 0.75–1.50 |
