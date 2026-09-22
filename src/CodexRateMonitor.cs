@@ -72,6 +72,17 @@ namespace CodexRateMonitorNative
         private DateTime lastCreditsCheck = DateTime.MinValue;
         private bool creditsFetchInFlight;
         private System.Windows.Forms.Timer trayTextRestoreTimer;
+
+        // Long-lived app-server stale detection. Periodic refresh now uses
+        // lightweight rateLimits/read calls; a full child restart happens only
+        // when reads look pinned (identical for many polls) or a snapshot is
+        // rejected, with a cooldown so restarts can never get chatty again.
+        private int identicalReads;
+        private bool updateNotificationSeen;
+        private DateTime lastResyncAt = DateTime.MinValue;
+        private const int StaleReadsBeforeResync = 10;
+        private const int ResyncCooldownMinutes = 30;
+        private const int AnomalyResyncCooldownSeconds = 120;
         private bool disposed;
 
         public MonitorContext(bool showSettings)
@@ -90,6 +101,7 @@ namespace CodexRateMonitorNative
             snapshotStabilizer = new RateSnapshotStabilizer();
             appServer.SnapshotReceived += OnSnapshotReceived;
             appServer.StatusChanged += OnStatusChanged;
+            appServer.UpdateNotificationReceived += OnUpdateNotification;
 
             updateChecker = new UpdateChecker(BuildVersion.Value);
             updateChecker.CheckCompleted += OnUpdateCheckCompleted;
@@ -235,6 +247,9 @@ namespace CodexRateMonitorNative
             {
                 appServer.Start();
                 lastRequest = DateTime.Now;
+                // Fresh child: stale-detection state starts over.
+                identicalReads = 0;
+                updateNotificationSeen = false;
             }
             catch (Exception ex)
             {
@@ -257,7 +272,72 @@ namespace CodexRateMonitorNative
                 return;
 
             lastRequest = DateTime.Now;
-            appServer.RefreshRateLimits();
+            // Lightweight refresh: reuse the long-lived app-server and just ask
+            // it for fresh limits. Combined with the account/rateLimits/updated
+            // push this keeps data current without the heavy child restarts
+            // (each restart re-runs CLI initialization and pulled megabytes of
+            // init traffic every poll -- see issue #5).
+            appServer.RequestRateLimits();
+        }
+
+        private void OnUpdateNotification()
+        {
+            updateNotificationSeen = true;
+            identicalReads = 0;
+        }
+
+        // Detects a pinned read channel: when many consecutive reads return
+        // byte-identical window data and no push notification has arrived, do a
+        // single child restart (rate limited by a cooldown) to resync.
+        private void TrackSnapshotFreshness(RateSnapshot snapshot)
+        {
+            if (lastSnapshot == null || snapshot == null)
+                return;
+            if (updateNotificationSeen)
+            {
+                identicalReads = 0;
+                return;
+            }
+            if (SameWindow(snapshot.Primary, lastSnapshot.Primary) &&
+                SameWindow(snapshot.Secondary, lastSnapshot.Secondary))
+            {
+                identicalReads++;
+            }
+            else
+            {
+                identicalReads = 0;
+                return;
+            }
+            if (identicalReads >= StaleReadsBeforeResync &&
+                (DateTime.Now - lastResyncAt).TotalMinutes >= ResyncCooldownMinutes &&
+                appServer.IsRunning)
+            {
+                DiagnosticLog.Write(
+                    "resync-restart",
+                    "reason=pinned-reads identical=" + identicalReads);
+                identicalReads = 0;
+                lastResyncAt = DateTime.Now;
+                try
+                {
+                    appServer.RefreshRateLimits();
+                }
+                catch (Exception ex)
+                {
+                    DiagnosticLog.Write(
+                        "resync-restart-failed",
+                        "type=" + ex.GetType().Name);
+                }
+            }
+        }
+
+        private static bool SameWindow(WindowUsage a, WindowUsage b)
+        {
+            if (a == null && b == null)
+                return true;
+            if (a == null || b == null)
+                return false;
+            return a.UsedPercent == b.UsedPercent &&
+                   a.ResetsAt == b.ResetsAt;
         }
 
         private void OnSnapshotReceived(RateSnapshot snapshot)
@@ -274,7 +354,20 @@ namespace CodexRateMonitorNative
                     lastRequest = DateTime.Now;
                     try
                     {
-                        appServer.RefreshRateLimits();
+                        // A rejected snapshot means the data stream looked
+                        // inconsistent. Prefer a cheap re-read; only allow a
+                        // full child restart after a cooldown so this can never
+                        // turn into a restart storm.
+                        if ((DateTime.Now - lastResyncAt).TotalSeconds >=
+                            AnomalyResyncCooldownSeconds)
+                        {
+                            lastResyncAt = DateTime.Now;
+                            appServer.RefreshRateLimits();
+                        }
+                        else
+                        {
+                            appServer.RequestRateLimits();
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -297,6 +390,7 @@ namespace CodexRateMonitorNative
                     "mode=" + settings.UsageDisplay +
                     " " + AppServerClient.DescribeSnapshot(snapshot));
                 lastSnapshot = snapshot;
+                TrackSnapshotFreshness(snapshot);
                 UpdateTrayText();
             });
         }
@@ -1320,6 +1414,10 @@ namespace CodexRateMonitorNative
         public event Action<RateSnapshot> SnapshotReceived;
         public event Action<string> StatusChanged;
 
+        // Raised whenever the server pushes account/rateLimits/updated. On a
+        // long-lived app-server this proves the channel delivers fresh data.
+        public event Action UpdateNotificationReceived;
+
         public bool IsInitialized { get; private set; }
 
         public bool IsRunning
@@ -1451,14 +1549,18 @@ namespace CodexRateMonitorNative
             Send(message);
         }
 
+        // Full child restart. NOT part of the normal refresh loop any more --
+        // periodic refresh uses lightweight account/rateLimits/read requests on
+        // the long-lived server (see MonitorContext). Kept only as an occasional
+        // resync when the read channel looks pinned.
         public void RefreshRateLimits()
         {
             if (!IsInitialized)
                 return;
 
             // account/rateLimits/read can remain pinned to the snapshot captured when
-            // a long-lived app-server starts. Recreate the local child so each timed
-            // refresh reads current server-side limits.
+            // a long-lived app-server starts. Recreate the local child so each resync
+            // reads current server-side limits.
             DiagnosticLog.Write("app-server-refresh", "action=restart");
             DisposeProcess();
             Start();
@@ -1584,6 +1686,8 @@ namespace CodexRateMonitorNative
                     "rate-notification",
                     "raw=" + DescribeRateLimitsContainer(parameters) +
                     " parsed=" + DescribeSnapshot(snapshot));
+                if (UpdateNotificationReceived != null)
+                    UpdateNotificationReceived();
                 if (snapshot != null)
                     RaiseSnapshot(snapshot);
             }
