@@ -4,7 +4,7 @@
 
 # Codex Rate Monitor for Windows
 
-[简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · **English**
+[绠€浣撲腑鏂嘳(README.zh-CN.md) 路 [绻侀珨涓枃](README.zh-TW.md) 路 **English**
 
 A small, native Windows tray utility that shows the current Codex 5-hour and
 7-day usage windows next to ChatGPT desktop's Codex UI, plus available
@@ -17,8 +17,8 @@ rate-limit reset credits.
 ## Screenshots
 
 The overlay supports 1-row and multi-row layouts. The reset-credit card in the
-multi-row layout changes color as expiry approaches: normal → warning (≤7
-days) → danger tint (≤3 days), and hides itself when no credits are available.
+multi-row layout changes color as expiry approaches: normal 鈫?warning (鈮?
+days) 鈫?danger tint (鈮? days), and hides itself when no credits are available.
 
 ![Multi-row overlay](docs/overlay-multirow-credits-zh-cn.png)
 
@@ -41,7 +41,7 @@ and the reset-credits (read-only) toggle.
 - Overlay with desktop-floating (topmost, draggable, click-through) and
   window-attach modes; 1-row / multi-row layouts; remaining or used display.
 - Reset-credit badge: read-only display of available credits and earliest
-  expiry — never redeems credits.
+  expiry 鈥?never redeems credits.
 - Multi-line tray tooltip with usage and reset-credit summary.
 - Low traffic: long-lived app-server with lightweight reads plus push
   notifications, and a reduced cadence while the desktop window is minimized
@@ -72,17 +72,17 @@ warning. Download only from this repository's Releases page and verify.
 The tool is designed to be gentle on your data plan (background:
 [issue #5](https://github.com/D1NOOO/codex-usage-monitor/issues/5)):
 
-| Scenario | Behavior | Measured traffic |
-|---|---|---|
-| ChatGPT/Codex window visible | One lightweight read every `RefreshSeconds` (default 60s) | ~1 KB/min |
-| Window minimized / tray-only | Cadence drops to `MinimizedRefreshSeconds` (default 300s) | ~0.2 KB/min |
-| Reset-credit query | One read-only request every `ResetCreditsSeconds` (default 30 min) | negligible |
+| Scenario | Behavior |
+|---|---|
+| ChatGPT/Codex window visible | One lightweight read every `RefreshSeconds` (default 60s) |
+| Window minimized / tray-only | Cadence drops to `MinimizedRefreshSeconds` (default 300s) |
+| Reset-credit query | One read-only request every `ResetCreditsSeconds` (default 30 min) |
 
-The app-server process stays alive for the whole session; periodic refreshes
-send lightweight `account/rateLimits/read` requests and merge
-`account/rateLimits/updated` push notifications instead of restarting the
-process. The old scheme restarted the CLI every 60 seconds and generated about
-2.9 GB/day; the new scheme measures well under 10 MB/day.
+The app-server process stays alive and is reused for the whole session;
+periodic refreshes send lightweight `account/rateLimits/read` requests and
+merge `account/rateLimits/updated` push notifications instead of restarting
+the process. The old scheme cold-started the CLI on every refresh, whose
+initialization traffic dwarfed the lightweight reads (see issue #5).
 
 ## How it works
 
@@ -94,7 +94,7 @@ flowchart LR
     Server --> API["OpenAI services"]
 ```
 
-The monitor locates a Codex executable (desktop-bundled → npm install → PATH),
+The monitor locates a Codex executable (desktop-bundled 鈫?npm install 鈫?PATH),
 starts `codex.exe app-server`, sends `account/rateLimits/read`, renders
 `primary` as the 5-hour window and `secondary` as the 7-day window, and merges
 `account/rateLimits/updated` notifications.
@@ -102,7 +102,7 @@ starts `codex.exe app-server`, sends `account/rateLimits/read`, renders
 OpenAI authentication is owned by ChatGPT/Codex. The one exception: when reset
 credits are enabled, the monitor reads the access token from `~/.codex/auth.json`
 locally and uses it only to query the read-only endpoint
-`chatgpt.com/backend-api/wham/rate-limit-reset-credits` — the token lives in
+`chatgpt.com/backend-api/wham/rate-limit-reset-credits` 鈥?the token lives in
 memory for the duration of each request and is never redeemed, stored, or sent
 anywhere else. Redacted diagnostic logs live under
 `%LOCALAPPDATA%\CodexRateMonitor\logs` and never contain tokens or account
@@ -117,10 +117,10 @@ Common `settings.json` fields (template in `config/settings.default.json`):
 | `Language` | `auto` / `zh-CN` / `zh-TW` / `en` |
 | `OverlayMode` | `desktop` (default, floating) / `attach` |
 | `UsageDisplay` | `remaining` (default) / `used` |
-| `RefreshSeconds` | 30–900, cadence while the window is visible (default 60) |
-| `MinimizedRefreshSeconds` | 60–3600, cadence while minimized (default 300) |
+| `RefreshSeconds` | 30鈥?00, cadence while the window is visible (default 60) |
+| `MinimizedRefreshSeconds` | 60鈥?600, cadence while minimized (default 300) |
 | `ShowResetCredits` | Reset-credit badge toggle (default on) |
-| `ResetCreditsSeconds` | 300–86400, reset-credit query interval (default 1800) |
+| `ResetCreditsSeconds` | 300鈥?6400, reset-credit query interval (default 1800) |
 | `DiagnosticsEnabled` / `DiagnosticRetentionDays` | Diagnostic log toggle and retention |
 
 Appearance fields (fonts, `#RRGGBB` colors, scale, opacity) are documented in
@@ -145,7 +145,7 @@ To release, bump `version.txt`, push a matching tag, and
 
 Open or update ChatGPT desktop first. Standalone CLI users: check
 `codex --version` and `codex app-server --help`, then run `codex doctor`.
-If it reports API-key auth, sign in with the ChatGPT account flow — API keys
+If it reports API-key auth, sign in with the ChatGPT account flow 鈥?API keys
 cannot return subscription usage windows.
 
 ### The overlay is missing

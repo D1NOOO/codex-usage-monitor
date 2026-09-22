@@ -81,7 +81,10 @@ namespace CodexRateMonitorNative
         private bool updateNotificationSeen;
         private DateTime lastResyncAt = DateTime.MinValue;
         private const int StaleReadsBeforeResync = 10;
-        private const int ResyncCooldownMinutes = 30;
+        // Six-hour cooldown: idle periods naturally produce identical reads
+        // (nothing changed server-side), so a short cooldown would burn ~2 MB
+        // per pointless restart. Real staleness waits at most 6 hours.
+        private const int ResyncCooldownMinutes = 360;
         private const int AnomalyResyncCooldownSeconds = 120;
         private bool disposed;
 

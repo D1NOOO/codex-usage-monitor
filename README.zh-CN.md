@@ -20,13 +20,19 @@
 
 ![多行布局](docs/overlay-multirow-credits-zh-cn.png)
 
+
+
 1 行布局把 5 小时、7 天与重置券卡片横向排成一行，适合嵌入标题栏。
 
 ![1 行布局](docs/overlay-oneline-credits-zh-cn.png)
 
+
+
 鼠标悬停托盘图标可查看分行显示的用量与重置券摘要。
 
 ![托盘悬浮提示](docs/tray-tooltip-zh-cn.png)
+
+
 
 外观设置提供实时预览：位置、字体、颜色、透明度，以及「显示重置券（只读查询）」开关。
 
@@ -63,15 +69,15 @@ EXE 未做商业签名，SmartScreen 可能提示未知发布者；请只从 Rel
 程序专门为低流量设计（背景见
 [issue #5](https://github.com/D1NOOO/codex-usage-monitor/issues/5)）：
 
-| 场景 | 行为 | 实测流量 |
-|---|---|---|
-| ChatGPT/Codex 窗口可见 | 每 `RefreshSeconds`（默认 60s）一次轻量读取 | ~1 KB/分钟 |
-| 窗口最小化 / 仅托盘 | 降频到 `MinimizedRefreshSeconds`（默认 300s） | ~0.2 KB/分钟 |
-| 重置券查询 | 每 `ResetCreditsSeconds`（默认 30 分钟）一次只读请求 | 可忽略 |
+| 场景 | 行为 |
+|---|---|
+| ChatGPT/Codex 窗口可见 | 每 `RefreshSeconds`（默认 60s）一次轻量读取 |
+| 窗口最小化 / 仅托盘 | 降频到 `MinimizedRefreshSeconds`（默认 300s） |
+| 重置券查询 | 每 `ResetCreditsSeconds`（默认 30 分钟）一次只读请求 |
 
-app-server 进程全程常驻，周期刷新只发送轻量 `account/rateLimits/read` 请求并合并
-`account/rateLimits/updated` 推送，不按固定周期重启进程。旧方案每 60 秒重启一次约
-产生 2.9 GB/天流量；新方案实测不足 10 MB/天。
+app-server 进程全程常驻复用：周期刷新只发送轻量 `account/rateLimits/read` 请求并合并
+`account/rateLimits/updated` 推送，不按固定周期重启进程。旧方案每次刷新都要冷启动
+CLI，其初始化流量是轻量读取的数千倍（详见 issue #5）。
 
 ## 实现原理
 
@@ -97,16 +103,16 @@ flowchart LR
 
 `settings.json`（来自 `config/settings.default.json`）常用字段：
 
-| 字段 | 说明 |
-|---|---|
-| `Language` | `auto` / `zh-CN` / `zh-TW` / `en` |
-| `OverlayMode` | `desktop`（默认，桌面悬浮）/ `attach`（吸附窗口） |
-| `UsageDisplay` | `remaining`（默认）/ `used` |
-| `RefreshSeconds` | 30–900，窗口可见时的刷新间隔（默认 60） |
-| `MinimizedRefreshSeconds` | 60–3600，最小化时的刷新间隔（默认 300） |
-| `ShowResetCredits` | 重置券卡片开关（默认开） |
-| `ResetCreditsSeconds` | 300–86400，重置券查询间隔（默认 1800） |
-| `DiagnosticsEnabled` / `DiagnosticRetentionDays` | 诊断日志开关与保留天数 |
+| 字段                                               | 说明                                 |
+| ------------------------------------------------ | ---------------------------------- |
+| `Language`                                       | `auto` / `zh-CN` / `zh-TW` / `en`  |
+| `OverlayMode`                                    | `desktop`（默认，桌面悬浮）/ `attach`（吸附窗口） |
+| `UsageDisplay`                                   | `remaining`（默认）/ `used`            |
+| `RefreshSeconds`                                 | 30–900，窗口可见时的刷新间隔（默认 60）           |
+| `MinimizedRefreshSeconds`                        | 60–3600，最小化时的刷新间隔（默认 300）          |
+| `ShowResetCredits`                               | 重置券卡片开关（默认开）                       |
+| `ResetCreditsSeconds`                            | 300–86400，重置券查询间隔（默认 1800）         |
+| `DiagnosticsEnabled` / `DiagnosticRetentionDays` | 诊断日志开关与保留天数                        |
 
 其余外观字段（字体、颜色 `#RRGGBB`、缩放、透明度等）见默认模板或外观设置界面。
 

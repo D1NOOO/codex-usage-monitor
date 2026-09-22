@@ -63,15 +63,15 @@ EXE 未做商業簽章，SmartScreen 可能提示未知發行者；請只從 Rel
 程式專門為低流量設計（背景見
 [issue #5](https://github.com/D1NOOO/codex-usage-monitor/issues/5)）：
 
-| 情境 | 行為 | 實測流量 |
-|---|---|---|
-| ChatGPT/Codex 視窗可見 | 每 `RefreshSeconds`（預設 60s）一次輕量讀取 | ~1 KB/分鐘 |
-| 視窗最小化 / 僅通知區域 | 降頻到 `MinimizedRefreshSeconds`（預設 300s） | ~0.2 KB/分鐘 |
-| 重置券查詢 | 每 `ResetCreditsSeconds`（預設 30 分鐘）一次唯讀請求 | 可忽略 |
+| 情境 | 行為 |
+|---|---|
+| ChatGPT/Codex 視窗可見 | 每 `RefreshSeconds`（預設 60s）一次輕量讀取 |
+| 視窗最小化 / 僅通知區域 | 降頻到 `MinimizedRefreshSeconds`（預設 300s） |
+| 重置券查詢 | 每 `ResetCreditsSeconds`（預設 30 分鐘）一次唯讀請求 |
 
-app-server 程序全程常駐，週期重新整理只傳送輕量 `account/rateLimits/read` 請求並合併
-`account/rateLimits/updated` 推送，不按固定週期重啟程序。舊方案每 60 秒重啟一次約
-產生 2.9 GB/天流量；新方案實測不足 10 MB/天。
+app-server 程序全程常駐複用：週期重新整理只傳送輕量 `account/rateLimits/read` 請求並合併
+`account/rateLimits/updated` 推送，不按固定週期重啟程序。舊方案每次重新整理都要冷啟動
+CLI，其初始化流量是輕量讀取的數千倍（詳見 issue #5）。
 
 ## 實作原理
 
