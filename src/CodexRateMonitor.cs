@@ -197,27 +197,33 @@ namespace CodexRateMonitorNative
         {
             DiagnosticLog.CleanupIfDue();
 
+            // Visible = normal refresh cadence. Minimized/tray = the app-server
+            // stays alive but polls at the reduced MinimizedRefreshSeconds
+            // cadence, keeping data roughly fresh for ~zero traffic.
+            bool desktopVisible;
             if (settings.OverlayMode == "desktop")
             {
                 // Desktop mode floats independently of the ChatGPT/Codex window:
                 // it never hides when switching apps, but still polls usage as
-                // long as a Codex desktop client is running in the background.
+                // long as the desktop app runs (visible or minimized).
                 overlay.EnsureDesktopVisible();
                 // Topmost re-assertion is handled by the dedicated 50ms
                 // topmostTimer, not here, for tighter recovery latency.
-                if (!appServer.IsRunning && WindowLocator.FindDesktopMainWindow() != IntPtr.Zero)
+                desktopVisible = WindowLocator.FindDesktopMainWindow() != IntPtr.Zero;
+                if (!appServer.IsRunning &&
+                    (desktopVisible || WindowLocator.IsDesktopAppRunning()))
                     StartAppServer();
             }
             else
             {
                 IntPtr desktopWindow = WindowLocator.FindForegroundDesktopMainWindow();
-                bool desktopIsForeground = desktopWindow != IntPtr.Zero &&
+                desktopVisible = desktopWindow != IntPtr.Zero &&
                                            !NativeMethods.IsIconic(desktopWindow);
 
-                if (desktopIsForeground)
+                if (desktopVisible)
                 {
                     overlay.AttachTo(desktopWindow);
-                    if (!appServer.IsRunning)
+                    if (!appServer.IsRunning && WindowLocator.IsDesktopAppRunning())
                         StartAppServer();
                 }
                 else
@@ -226,10 +232,15 @@ namespace CodexRateMonitorNative
                 }
             }
 
-            if (appServer.IsInitialized &&
-                (DateTime.Now - lastRequest).TotalSeconds >= settings.RefreshSeconds)
+            if (appServer.IsInitialized)
             {
-                RequestRateLimits();
+                int refreshSeconds = desktopVisible
+                    ? settings.RefreshSeconds
+                    : Math.Max(
+                        settings.RefreshSeconds,
+                        settings.MinimizedRefreshSeconds);
+                if ((DateTime.Now - lastRequest).TotalSeconds >= refreshSeconds)
+                    RequestRateLimits();
             }
 
             if (settings.ShowResetCredits &&
@@ -1659,9 +1670,14 @@ namespace CodexRateMonitorNative
             {
                 if (message.ContainsKey("error"))
                 {
+                    var error = GetDictionary(message, "error");
+                    string detail = GetString(error, "message");
+                    if (string.IsNullOrEmpty(detail))
+                        detail = DescribeRawMessage(message);
                     DiagnosticLog.Write(
                         "rate-response-error",
-                        "id=" + id.ToString(CultureInfo.InvariantCulture));
+                        "id=" + id.ToString(CultureInfo.InvariantCulture) +
+                        " error=" + detail);
                     RaiseStatus(GetRateLimitErrorStatus(message));
                     return;
                 }
@@ -1822,6 +1838,19 @@ namespace CodexRateMonitorNative
             catch
             {
                 return "unknown";
+            }
+        }
+
+        private static string DescribeRawMessage(Dictionary<string, object> message)
+        {
+            try
+            {
+                string json = new JavaScriptSerializer().Serialize(message);
+                return json.Length > 400 ? json.Substring(0, 400) : json;
+            }
+            catch
+            {
+                return "(unserializable)";
             }
         }
 
@@ -2266,6 +2295,34 @@ namespace CodexRateMonitorNative
 
     internal static class WindowLocator
     {
+        // True when the ChatGPT/Codex desktop app is running, even if its main
+        // window is minimized to the tray (no visible window). Used to keep
+        // low-frequency monitoring alive while the window is hidden.
+        public static bool IsDesktopAppRunning()
+        {
+            try
+            {
+                foreach (Process process in DesktopAppProcess.GetRunningProcesses())
+                {
+                    bool isDesktop;
+                    try
+                    {
+                        isDesktop = DesktopAppProcess.IsDesktopAppProcess(process);
+                    }
+                    catch
+                    {
+                        isDesktop = false;
+                    }
+                    if (isDesktop)
+                        return true;
+                }
+            }
+            catch
+            {
+            }
+            return false;
+        }
+
         public static IntPtr FindDesktopMainWindow()
         {
             Process selected = null;
@@ -2507,6 +2564,11 @@ namespace CodexRateMonitorNative
         public bool ShowResetCredits { get; set; }
         public int ResetCreditsSeconds { get; set; }
 
+        // Refresh cadence while the desktop window is minimized/tray-only.
+        // Polls continue at this reduced rate so data stays roughly fresh for
+        // near-zero traffic (a read is a few hundred bytes).
+        public int MinimizedRefreshSeconds { get; set; }
+
         public MonitorSettings()
         {
             Language = "auto";
@@ -2520,6 +2582,7 @@ namespace CodexRateMonitorNative
             OverlayMode = "desktop";
             ShowResetCredits = true;
             ResetCreditsSeconds = 1800;
+            MinimizedRefreshSeconds = 300;
         }
 
         public static string SettingsPath
@@ -2575,6 +2638,7 @@ namespace CodexRateMonitorNative
             clone.DesktopY = DesktopY;
             clone.ShowResetCredits = ShowResetCredits;
             clone.ResetCreditsSeconds = ResetCreditsSeconds;
+            clone.MinimizedRefreshSeconds = MinimizedRefreshSeconds;
             clone.Normalize();
             return clone;
         }
@@ -2591,6 +2655,7 @@ namespace CodexRateMonitorNative
             UsageDisplay = UsageDisplayTools.Normalize(UsageDisplay);
             RefreshSeconds = Math.Max(30, Math.Min(900, RefreshSeconds));
             ResetCreditsSeconds = Math.Max(300, Math.Min(86400, ResetCreditsSeconds));
+            MinimizedRefreshSeconds = Math.Max(60, Math.Min(3600, MinimizedRefreshSeconds));
             DiagnosticRetentionDays = Math.Max(1, Math.Min(30, DiagnosticRetentionDays));
             if (Style == null)
                 Style = new StyleSettings();
