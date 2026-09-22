@@ -37,6 +37,15 @@ instance, then start this build again and bring ChatGPT/Codex to the foreground.
 
 ![Appearance settings](docs/appearance-settings-zh-cn.png)
 
+### Screenshots
+
+| | |
+|---|---|
+| ![Multi-row overlay with reset credits](docs/overlay-multirow-credits-zh-cn.png) | ![One-row overlay with reset credits](docs/overlay-oneline-credits-zh-cn.png) |
+| *Multi-row layout with the reset-credit card* | *One-row layout with the reset-credit card* |
+| ![Tray tooltip](docs/tray-tooltip-zh-cn.png) | ![Appearance settings](docs/appearance-settings-reset-credits-zh-cn.png) |
+| *Multi-line tray tooltip* | *Appearance settings with the reset-credits toggle* |
+
 ## Features
 
 - Shows remaining percentage by default, or used percentage when selected.
@@ -209,6 +218,8 @@ happens only as a rare resync when reads look pinned. While the ChatGPT/Codex
 window is minimized, the refresh cadence drops to `MinimizedRefreshSeconds`.
 
 ### Reset credits
+
+![Multi-row overlay with the reset-credit card](docs/overlay-multirow-credits-zh-cn.png)
 
 OpenAI grants some plans saveable rate-limit reset credits. When
 `ShowResetCredits` is enabled, the monitor queries the read-only endpoint

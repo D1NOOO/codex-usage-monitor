@@ -30,6 +30,15 @@ ChatGPT/Codex 切到前台。
 
 ![外观设置](docs/appearance-settings-zh-cn.png)
 
+### 界面截图
+
+| | |
+|---|---|
+| ![多行布局与重置券卡片](docs/overlay-multirow-credits-zh-cn.png) | ![1 行布局与重置券卡片](docs/overlay-oneline-credits-zh-cn.png) |
+| *多行布局 + 重置券卡片* | *1 行布局 + 重置券卡片* |
+| ![托盘多行悬浮提示](docs/tray-tooltip-zh-cn.png) | ![外观设置与重置券开关](docs/appearance-settings-reset-credits-zh-cn.png) |
+| *托盘多行悬浮提示* | *外观设置中的「显示重置券」开关* |
+
 ## 功能
 
 - 默认显示 5 小时与 7 天窗口的剩余百分比，也可切换为显示已用。
@@ -153,6 +162,8 @@ app-server 进程在整个会话期间保持常驻。周期刷新只通过同一
 刷新频率自动降到 `MinimizedRefreshSeconds`。
 
 ### 重置券
+
+![多行布局中的重置券卡片](docs/overlay-multirow-credits-zh-cn.png)
 
 OpenAI 会向部分套餐发放可存储的限额重置券。启用 `ShowResetCredits` 后，程序使用
 `~/.codex/auth.json` 中的访问令牌（同机同账号）查询只读接口
