@@ -123,8 +123,10 @@ async function sample() {
         const e = hostEntry(host);
         e.down += dDown;
         e.up += dUp;
-        deltaDown += dDown;
-        deltaUp += dUp;
+        if (matched(host)) {
+          deltaDown += dDown;
+          deltaUp += dUp;
+        }
       }
     } else {
       hostEntry(host).conns += 1;
