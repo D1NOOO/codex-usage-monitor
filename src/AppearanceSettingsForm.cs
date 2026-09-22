@@ -28,6 +28,7 @@ namespace CodexRateMonitorNative
         private readonly RadioButton attachModeRadio;
         private readonly RadioButton oneLineRadio;
         private readonly RadioButton twoLinesRadio;
+        private readonly CheckBox showResetCredits;
         private readonly ComboBox language;
         private GroupBox positionGroup;
         private TableLayoutPanel positionLinesRow;
@@ -148,8 +149,14 @@ namespace CodexRateMonitorNative
             attachModeRadio.AutoSize = true;
             attachModeRadio.Margin = new Padding(0, 2, 0, 0);
             attachModeRadio.CheckedChanged += ControlChanged;
+            showResetCredits = new CheckBox();
+            showResetCredits.Text = I18n.T("ShowResetCredits");
+            showResetCredits.AutoSize = true;
+            showResetCredits.Margin = new Padding(22, 2, 0, 0);
+            showResetCredits.CheckedChanged += ControlChanged;
             modePanel.Controls.Add(desktopModeRadio);
             modePanel.Controls.Add(attachModeRadio);
+            modePanel.Controls.Add(showResetCredits);
             modeGroup.Controls.Add(modePanel);
             root.Controls.Add(modeGroup, 0, 2);
 
@@ -553,6 +560,7 @@ namespace CodexRateMonitorNative
                 showUsed.Checked = !UsageDisplayTools.IsRemaining(working.UsageDisplay);
                 desktopModeRadio.Checked = working.OverlayMode == "desktop";
                 attachModeRadio.Checked = working.OverlayMode == "attach";
+                showResetCredits.Checked = working.ShowResetCredits;
                 string languageCode = I18n.NormalizeSetting(working.Language);
                 for (int i = 0; i < language.Items.Count; i++)
                 {
@@ -626,6 +634,7 @@ namespace CodexRateMonitorNative
             working.DisplayLines = twoLinesRadio.Checked ? "2" : "1";
             working.UsageDisplay = showUsed.Checked ? "used" : "remaining";
             working.OverlayMode = desktopModeRadio.Checked ? "desktop" : "attach";
+            working.ShowResetCredits = showResetCredits.Checked;
             var selectedLanguage = language.SelectedItem as LanguageOption;
             working.Language = selectedLanguage == null ? "auto" : selectedLanguage.Code;
             working.Style.FontFamily = string.IsNullOrWhiteSpace(fontFamily.Text)
@@ -790,11 +799,16 @@ namespace CodexRateMonitorNative
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
 
+            int creditsWidthExtra = settings.ShowResetCredits
+                ? (DrawingHelpers.TopWidthWithCredits - 470)
+                : 0;
             int baseWidth = settings.DisplayLines == "2"
                 ? DrawingHelpers.BottomRightWidth
-                : 470;
+                : 470 + creditsWidthExtra;
             int baseHeight = settings.DisplayLines == "2"
-                ? DrawingHelpers.BottomRightHeight
+                ? (settings.ShowResetCredits
+                    ? DrawingHelpers.BottomRightHeightWithCredits
+                    : DrawingHelpers.BottomRightHeight)
                 : 40;
             float fit = Math.Min(
                 (ClientSize.Width - 28f) / baseWidth,
@@ -840,6 +854,8 @@ namespace CodexRateMonitorNative
                 DrawRow(g, DrawingHelpers.GetBottomRightCardBounds(false),
                     I18n.Translate("SevenDay", settings.Language), 5f,
                     FormatReset(sevenReset), card, false);
+                if (settings.ShowResetCredits)
+                    DrawCreditsPreview(g, DrawingHelpers.GetCreditsRowBounds(), card);
             }
             else
             {
@@ -849,7 +865,51 @@ namespace CodexRateMonitorNative
                 DrawRow(g, new RectangleF(237, 5, 228, 30),
                     I18n.Translate("SevenDay", settings.Language), 5f,
                     FormatReset(sevenReset), card, false);
+                if (settings.ShowResetCredits)
+                    DrawCreditsPreview(g, new RectangleF(469, 5, 148, 30), card);
             }
+        }
+
+        // Static preview of the reset-credits card (sample data: two credits,
+        // earliest expiring in 5 days -> amber warning state).
+        private void DrawCreditsPreview(Graphics g, RectangleF bounds, Color card)
+        {
+            StyleSettings style = settings.Style;
+            Color deadline = ColorTools.Parse(style.Warning);
+            using (var brush = new SolidBrush(card))
+            using (GraphicsPath path = DrawingHelpers.RoundRect(
+                bounds, Math.Max(0, (float)style.CornerRadius - 3f)))
+                g.FillPath(brush, path);
+
+            FontFamily family;
+            try { family = new FontFamily(style.FontFamily); }
+            catch { family = SystemFonts.MessageBoxFont.FontFamily; }
+
+            string count = string.Format(
+                CultureInfo.CurrentCulture,
+                I18n.Translate("CreditsBadge", settings.Language), 2);
+            string expiry = string.Format(
+                CultureInfo.CurrentCulture,
+                I18n.Translate("CreditsExpire", settings.Language),
+                DateTime.Today.AddDays(5).ToString("MM-dd", CultureInfo.CurrentCulture));
+
+            float creditFontSize = (float)Math.Max(10, style.ResetFontSize);
+            using (family)
+            using (var main = new Font(family, creditFontSize, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (var small = new Font(family, creditFontSize, FontStyle.Regular, GraphicsUnit.Pixel))
+            using (var textBrush = new SolidBrush(deadline))
+            using (var deadlineBrush = new SolidBrush(deadline))
+            {
+                DrawingHelpers.DrawCreditsText(
+                    g, bounds, count, expiry, main, small, textBrush, deadlineBrush);
+            }
+
+            RectangleF track = new RectangleF(bounds.X + 7, bounds.Bottom - 4, bounds.Width - 14, 2);
+            using (var trackBrush = new SolidBrush(ColorTools.Parse(style.Track)))
+                g.FillRectangle(trackBrush, track);
+            using (var progressBrush = new SolidBrush(deadline))
+                g.FillRectangle(progressBrush,
+                    new RectangleF(track.X, track.Y, track.Width * 0.8f, track.Height));
         }
 
         private void DrawRow(

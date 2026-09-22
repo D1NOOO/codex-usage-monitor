@@ -7,6 +7,8 @@
   "DesktopY": 0,
   "UsageDisplay": "remaining",
   "RefreshSeconds": 60,
+  "ShowResetCredits": true,
+  "ResetCreditsSeconds": 1800,
   "DiagnosticsEnabled": true,
   "DiagnosticRetentionDays": 7,
   "Style": {

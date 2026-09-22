@@ -67,6 +67,11 @@ namespace CodexRateMonitorNative
         private UpdateInfo availableUpdate;
         private Icon updateAvailableIcon;
         private DateTime lastRequest = DateTime.MinValue;
+        private RateSnapshot lastSnapshot;
+        private ResetCreditsInfo resetCredits;
+        private DateTime lastCreditsCheck = DateTime.MinValue;
+        private bool creditsFetchInFlight;
+        private System.Windows.Forms.Timer trayTextRestoreTimer;
         private bool disposed;
 
         public MonitorContext(bool showSettings)
@@ -113,6 +118,25 @@ namespace CodexRateMonitorNative
             topmostTimer.Interval = 50;
             topmostTimer.Tick += delegate { overlay.ReassertTopmost(); };
             topmostTimer.Start();
+
+            // One-shot timer that restores the usage tooltip shortly after a
+            // transient tray message (e.g. "appearance saved") so the hover
+            // info never stays stuck on a stale notice.
+            trayTextRestoreTimer = new System.Windows.Forms.Timer();
+            trayTextRestoreTimer.Interval = 4000;
+            trayTextRestoreTimer.Tick += delegate
+            {
+                trayTextRestoreTimer.Stop();
+                UpdateTrayText();
+            };
+
+            // First reset-credit lookup shortly after startup. The dedicated
+            // client is strictly read-only; see ResetCreditsClient.
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                Thread.Sleep(3000);
+                FetchResetCredits();
+            });
 
             if (showSettings)
                 ShowAppearanceSettings();
@@ -195,6 +219,13 @@ namespace CodexRateMonitorNative
             {
                 RequestRateLimits();
             }
+
+            if (settings.ShowResetCredits &&
+                (DateTime.Now - lastCreditsCheck).TotalSeconds >=
+                    Math.Max(300, settings.ResetCreditsSeconds))
+            {
+                FetchResetCredits();
+            }
         }
 
         private void StartAppServer()
@@ -265,22 +296,79 @@ namespace CodexRateMonitorNative
                     "snapshot-displayed",
                     "mode=" + settings.UsageDisplay +
                     " " + AppServerClient.DescribeSnapshot(snapshot));
-                trayIcon.Text = SafeTrayText(
-                    string.Format(CultureInfo.InvariantCulture,
-                        I18n.T("UsageTray"),
-                        I18n.T(UsageDisplayTools.IsRemaining(settings.UsageDisplay)
-                            ? "Remaining"
-                            : "Used"),
-                        snapshot.Primary == null
-                            ? "--%"
-                            : UsageDisplayTools.FormatPercent(
-                                UsageDisplayTools.GetDisplayedPercent(
-                                    snapshot.Primary.UsedPercent, settings.UsageDisplay)),
-                        snapshot.Secondary == null
-                            ? "--%"
-                            : UsageDisplayTools.FormatPercent(
-                                UsageDisplayTools.GetDisplayedPercent(
-                                    snapshot.Secondary.UsedPercent, settings.UsageDisplay))));
+                lastSnapshot = snapshot;
+                UpdateTrayText();
+            });
+        }
+
+        // Tray tooltip in a stacked four-line layout:
+        //   Codex 剩余：
+        //   5小时 xx% · 7天 xx%
+        //   重置券：
+        //   剩余 N 张，最早 MM-dd 过期
+        // The reset block is omitted while no credit data is available. Total
+        // length stays within the shell's 63-character NotifyIcon cap.
+        private void UpdateTrayText()
+        {
+            if (lastSnapshot == null)
+                return;
+            string text = string.Format(CultureInfo.InvariantCulture,
+                I18n.T("TrayUsageTitle"),
+                I18n.T(UsageDisplayTools.IsRemaining(settings.UsageDisplay)
+                    ? "Remaining"
+                    : "Used"));
+            text += "\n" + string.Format(
+                CultureInfo.InvariantCulture,
+                "{0} {1} · {2} {3}",
+                I18n.T("FiveHour"),
+                lastSnapshot.Primary == null
+                    ? "--%"
+                    : UsageDisplayTools.FormatPercent(
+                        UsageDisplayTools.GetDisplayedPercent(
+                            lastSnapshot.Primary.UsedPercent, settings.UsageDisplay)),
+                I18n.T("SevenDay"),
+                lastSnapshot.Secondary == null
+                    ? "--%"
+                    : UsageDisplayTools.FormatPercent(
+                        UsageDisplayTools.GetDisplayedPercent(
+                            lastSnapshot.Secondary.UsedPercent, settings.UsageDisplay)));
+            if (resetCredits != null && resetCredits.AvailableCount > 0)
+            {
+                text += "\n" + I18n.T("TrayCreditsTitle");
+                text += "\n" + string.Format(CultureInfo.InvariantCulture,
+                    I18n.T("TrayCreditsDetail"),
+                    resetCredits.AvailableCount.ToString(CultureInfo.InvariantCulture),
+                    resetCredits.FormatEarliestExpiry());
+            }
+            trayIcon.Text = SafeTrayText(text);
+        }
+
+        // Read-only reset-credit refresh. Runs off the UI thread; the result is
+        // marshaled back through Ui(). Failures stay silent (info stays null or
+        // stale) because the ChatGPT backend is an auxiliary data source.
+        private void FetchResetCredits()
+        {
+            if (!settings.ShowResetCredits || creditsFetchInFlight)
+                return;
+            creditsFetchInFlight = true;
+            lastCreditsCheck = DateTime.Now;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                ResetCreditsInfo info = ResetCreditsClient.Fetch();
+                Ui(delegate
+                {
+                    creditsFetchInFlight = false;
+                    resetCredits = info;
+                    // On failure retry soon (60s) instead of waiting a full
+                    // cycle; the backend is auxiliary so this stays quiet.
+                    lastCreditsCheck = info == null
+                        ? DateTime.Now.AddSeconds(
+                            -Math.Max(300, settings.ResetCreditsSeconds) + 60)
+                        : DateTime.Now;
+                    overlay.SetResetCredits(
+                        settings.ShowResetCredits ? resetCredits : null);
+                    UpdateTrayText();
+                });
             });
         }
 
@@ -470,6 +558,15 @@ namespace CodexRateMonitorNative
             return value;
         }
 
+        // Shows a short-lived tray notice and schedules the usage tooltip to
+        // come back automatically, so transient messages never stick.
+        private void ShowTransientTrayText(string text)
+        {
+            trayIcon.Text = SafeTrayText(text);
+            trayTextRestoreTimer.Stop();
+            trayTextRestoreTimer.Start();
+        }
+
         private void SetPosition(string position)
         {
             settings.Position = position;
@@ -508,7 +605,7 @@ namespace CodexRateMonitorNative
             I18n.SetLanguage(settings.Language);
             RefreshTrayLanguage();
             overlay.ApplySettings(settings);
-            trayIcon.Text = I18n.T("StyleReloaded");
+            ShowTransientTrayText(I18n.T("StyleReloaded"));
         }
 
         private void ShowAppearanceSettings()
@@ -536,7 +633,7 @@ namespace CodexRateMonitorNative
                     settings.Save();
                     RefreshTrayLanguage();
                     overlay.ApplySettings(settings);
-                    trayIcon.Text = I18n.T("AppearanceSaved");
+                    ShowTransientTrayText(I18n.T("AppearanceSaved"));
                 },
                 delegate
                 {
@@ -596,6 +693,12 @@ namespace CodexRateMonitorNative
             timer.Dispose();
             topmostTimer.Stop();
             topmostTimer.Dispose();
+            if (trayTextRestoreTimer != null)
+            {
+                trayTextRestoreTimer.Stop();
+                trayTextRestoreTimer.Dispose();
+                trayTextRestoreTimer = null;
+            }
             trayIcon.Visible = false;
             trayIcon.Dispose();
             updateChecker.Dispose();
@@ -617,6 +720,7 @@ namespace CodexRateMonitorNative
     {
         private MonitorSettings settings;
         private RateSnapshot snapshot;
+        private ResetCreditsInfo resetCredits;
         private string status = I18n.T("Connecting");
         private bool updateAvailable;
 
@@ -686,18 +790,38 @@ namespace CodexRateMonitorNative
             }
 
             Opacity = settings.Style.Opacity;
-            int baseWidth = (settings.DisplayLines == "2"
-                ? DrawingHelpers.BottomRightWidth : 470);
-            int width = (int)Math.Round(baseWidth * settings.Style.Scale);
-            int height = (int)Math.Round(
-                (settings.DisplayLines == "2" ? DrawingHelpers.BottomRightHeight : 40) *
-                settings.Style.Scale);
-            Size = new Size(width, height);
-            UpdateRegion();
+            UpdateOverlaySize();
 
             if (overlayMode == "desktop" && Visible)
                 ShowDesktop();
             Invalidate();
+        }
+
+        private bool ShowCreditsBadge
+        {
+            get
+            {
+                return settings.ShowResetCredits &&
+                       resetCredits != null &&
+                       resetCredits.AvailableCount > 0;
+            }
+        }
+
+        private void UpdateOverlaySize()
+        {
+            bool credits = ShowCreditsBadge;
+            int baseWidth = settings.DisplayLines == "2"
+                ? DrawingHelpers.BottomRightWidth
+                : (credits ? DrawingHelpers.TopWidthWithCredits : 470);
+            int baseHeight = settings.DisplayLines == "2"
+                ? (credits
+                    ? DrawingHelpers.BottomRightHeightWithCredits
+                    : DrawingHelpers.BottomRightHeight)
+                : 40;
+            int width = (int)Math.Round(baseWidth * settings.Style.Scale);
+            int height = (int)Math.Round(baseHeight * settings.Style.Scale);
+            Size = new Size(width, height);
+            UpdateRegion();
         }
 
         protected override void OnPaintBackground(PaintEventArgs e)
@@ -735,6 +859,13 @@ namespace CodexRateMonitorNative
         public void SetUpdateAvailable(bool value)
         {
             updateAvailable = value;
+            Invalidate();
+        }
+
+        public void SetResetCredits(ResetCreditsInfo value)
+        {
+            resetCredits = value;
+            UpdateOverlaySize();
             Invalidate();
         }
 
@@ -981,11 +1112,17 @@ namespace CodexRateMonitorNative
                     true, card, text, muted, track);
                 DrawCard(g, DrawingHelpers.GetBottomRightCardBounds(false),
                     false, card, text, muted, track);
+                if (ShowCreditsBadge)
+                    DrawCreditsCard(g, DrawingHelpers.GetCreditsRowBounds(),
+                        card, text, muted, track);
             }
             else
             {
                 DrawCard(g, new RectangleF(5, 5, 228, 30), true, card, text, muted, track);
                 DrawCard(g, new RectangleF(237, 5, 228, 30), false, card, text, muted, track);
+                if (ShowCreditsBadge)
+                    DrawCreditsCard(g, new RectangleF(469, 5, 148, 30),
+                        card, text, muted, track);
             }
 
             if (updateAvailable)
@@ -1069,6 +1206,94 @@ namespace CodexRateMonitorNative
                         trackRect.Y,
                         trackRect.Width * (float)value / 100f,
                         trackRect.Height));
+        }
+
+        // Third card: rate-limit reset credits (READ-ONLY display; the app
+        // never redeems credits). Shows the available count, the earliest
+        // expiry among available credits, and a thin bar with the elapsed
+        // fraction of that credit's 30-day lifetime. The bar/deadline color
+        // escalates: normal muted -> warning within 7 days -> danger within 3.
+        private void DrawCreditsCard(
+            Graphics g,
+            RectangleF bounds,
+            Color card,
+            Color text,
+            Color muted,
+            Color track)
+        {
+            ResetCreditsInfo info = resetCredits;
+            if (info == null)
+                return;
+
+            float cardRadius = Math.Max(0, (float)settings.Style.CornerRadius - 3f);
+
+            // Deadline escalation: >7 days keeps the calm card, <=7 days turns
+            // the texts amber, <=3 days additionally tints the card background
+            // red -- an expiring reset is paid-for capacity about to vanish.
+            double daysLeft = info.EarliestExpiry.HasValue
+                ? (info.EarliestExpiry.Value - DateTime.Now).TotalDays
+                : 99d;
+            Color deadline = daysLeft <= 3d
+                ? ColorTools.Parse(settings.Style.Danger)
+                : (daysLeft <= 7d
+                    ? ColorTools.Parse(settings.Style.Warning)
+                    : muted);
+            Color cardFill = card;
+            if (daysLeft <= 3d)
+            {
+                Color danger = ColorTools.Parse(settings.Style.Danger);
+                cardFill = Color.FromArgb(
+                    Math.Min(255, card.R + 38),
+                    (card.G + danger.G) / 2,
+                    (card.B + danger.B) / 2);
+            }
+
+            using (var brush = new SolidBrush(cardFill))
+            using (GraphicsPath path = DrawingHelpers.RoundRect(bounds, cardRadius))
+                g.FillPath(brush, path);
+
+            string count = string.Format(CultureInfo.InvariantCulture,
+                I18n.T("CreditsBadge"),
+                info.AvailableCount.ToString(CultureInfo.InvariantCulture));
+            string expiry = string.Format(CultureInfo.InvariantCulture,
+                I18n.T("CreditsExpire"),
+                info.FormatEarliestExpiry());
+
+            FontFamily family;
+            try
+            {
+                family = new FontFamily(settings.Style.FontFamily);
+            }
+            catch
+            {
+                family = SystemFonts.MessageBoxFont.FontFamily;
+            }
+
+            float creditFontSize = (float)Math.Max(10, settings.Style.ResetFontSize);
+            using (family)
+            using (var mainFont = new Font(family, creditFontSize, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (var smallFont = new Font(family, creditFontSize, FontStyle.Regular, GraphicsUnit.Pixel))
+            using (var textBrush = new SolidBrush(daysLeft <= 7d ? deadline : text))
+            using (var deadlineBrush = new SolidBrush(deadline))
+            {
+                DrawingHelpers.DrawCreditsText(
+                    g, bounds, count, expiry, mainFont, smallFont, textBrush, deadlineBrush);
+            }
+
+            RectangleF trackRect = new RectangleF(bounds.X + 7, bounds.Bottom - 4, bounds.Width - 14, 2);
+            using (var trackBrush = new SolidBrush(track))
+                g.FillRectangle(trackBrush, trackRect);
+            double fraction = info.ElapsedFraction();
+            if (fraction > 0d)
+            {
+                using (var progressBrush = new SolidBrush(deadline))
+                    g.FillRectangle(progressBrush,
+                        new RectangleF(
+                            trackRect.X,
+                            trackRect.Y,
+                            trackRect.Width * (float)Math.Min(1d, fraction),
+                            trackRect.Height));
+            }
         }
 
         private static string FormatReset(long? unixSeconds)
@@ -2173,6 +2398,11 @@ namespace CodexRateMonitorNative
         public int DesktopX { get; set; }
         public int DesktopY { get; set; }
 
+        // Read-only rate-limit reset-credit display. The app only queries the
+        // credits endpoint; it never redeems/consumes credits.
+        public bool ShowResetCredits { get; set; }
+        public int ResetCreditsSeconds { get; set; }
+
         public MonitorSettings()
         {
             Language = "auto";
@@ -2184,6 +2414,8 @@ namespace CodexRateMonitorNative
             DiagnosticRetentionDays = 7;
             Style = new StyleSettings();
             OverlayMode = "desktop";
+            ShowResetCredits = true;
+            ResetCreditsSeconds = 1800;
         }
 
         public static string SettingsPath
@@ -2237,6 +2469,8 @@ namespace CodexRateMonitorNative
             clone.OverlayMode = OverlayMode;
             clone.DesktopX = DesktopX;
             clone.DesktopY = DesktopY;
+            clone.ShowResetCredits = ShowResetCredits;
+            clone.ResetCreditsSeconds = ResetCreditsSeconds;
             clone.Normalize();
             return clone;
         }
@@ -2252,6 +2486,7 @@ namespace CodexRateMonitorNative
                 OverlayMode = "desktop";
             UsageDisplay = UsageDisplayTools.Normalize(UsageDisplay);
             RefreshSeconds = Math.Max(30, Math.Min(900, RefreshSeconds));
+            ResetCreditsSeconds = Math.Max(300, Math.Min(86400, ResetCreditsSeconds));
             DiagnosticRetentionDays = Math.Max(1, Math.Min(30, DiagnosticRetentionDays));
             if (Style == null)
                 Style = new StyleSettings();
@@ -2356,6 +2591,228 @@ namespace CodexRateMonitorNative
         public double UsedPercent { get; set; }
         public long? WindowDurationMins { get; set; }
         public long? ResetsAt { get; set; }
+    }
+
+    internal sealed class ResetCreditsInfo
+    {
+        public int AvailableCount { get; set; }
+
+        // Local-time snapshots of the earliest expiring available credit.
+        public DateTime? EarliestExpiry { get; set; }
+        public DateTime? EarliestGranted { get; set; }
+
+        public string FormatEarliestExpiry()
+        {
+            return EarliestExpiry.HasValue
+                ? EarliestExpiry.Value.ToString("MM-dd", CultureInfo.CurrentCulture)
+                : "--";
+        }
+
+        // Elapsed fraction of the earliest credit's lifetime, for the thin
+        // lifetime bar. 0 when the grant timestamp is unknown.
+        public double ElapsedFraction()
+        {
+            if (!EarliestExpiry.HasValue || !EarliestGranted.HasValue)
+                return 0d;
+            double total = (EarliestExpiry.Value - EarliestGranted.Value).TotalHours;
+            if (total <= 0d)
+                return 0d;
+            double elapsed = (DateTime.Now - EarliestGranted.Value).TotalHours;
+            return Math.Max(0d, Math.Min(1d, elapsed / total));
+        }
+    }
+
+    // SECURITY / SCOPE NOTE: this client is strictly READ-ONLY. It performs a
+    // single GET against the reset-credit info endpoint so the monitor can
+    // display balances and expiry dates. Redemption endpoints (e.g. POST
+    // .../rate-limit-reset-credits/consume or any app-server consume method)
+    // must NEVER be called from this application.
+    internal static class ResetCreditsClient
+    {
+        private const string EndpointUrl =
+            "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
+
+        static ResetCreditsClient()
+        {
+            // .NET 4.8 negotiates TLS 1.2+ by default, but force-enable 1.2 so
+            // the request never falls back on older policy defaults.
+            try
+            {
+                System.Net.ServicePointManager.SecurityProtocol |=
+                    System.Net.SecurityProtocolType.Tls12;
+            }
+            catch
+            {
+            }
+        }
+
+        public static ResetCreditsInfo Fetch()
+        {
+            string token = null;
+            string accountId = null;
+            try
+            {
+                string authPath = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    ".codex",
+                    "auth.json");
+                if (!File.Exists(authPath))
+                    return null;
+                var auth = new JavaScriptSerializer().DeserializeObject(
+                    File.ReadAllText(authPath, Encoding.UTF8)) as Dictionary<string, object>;
+                token = GetString(GetDictionary(auth, "tokens"), "access_token");
+                accountId = GetString(GetDictionary(auth, "tokens"), "account_id");
+            }
+            catch
+            {
+                return null;
+            }
+            if (string.IsNullOrEmpty(token))
+                return null;
+
+            try
+            {
+                var request = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(EndpointUrl);
+                request.Method = "GET"; // read-only by design
+                request.Timeout = 10000;
+                request.ReadWriteTimeout = 10000;
+                request.Accept = "application/json";
+                // Community tooling consistently uses the CLI's own UA against
+                // this endpoint; generic tool UAs get blocked at the edge.
+                request.UserAgent = "codex_cli_rs/" + BuildVersion.Value;
+                request.Headers[System.Net.HttpRequestHeader.Authorization] = "Bearer " + token;
+                if (!string.IsNullOrEmpty(accountId))
+                    request.Headers["chatgpt-account-id"] = accountId;
+                // Follow the machine's WinINET proxy configuration (the same
+                // system proxy the user's browser uses), with no special auth.
+                request.Proxy = System.Net.WebRequest.DefaultWebProxy;
+
+                using (var response = (System.Net.HttpWebResponse)request.GetResponse())
+                {
+                    if (response.StatusCode != System.Net.HttpStatusCode.OK)
+                        return null;
+                    using (var reader = new StreamReader(
+                        response.GetResponseStream(), Encoding.UTF8))
+                    {
+                        return Parse(reader.ReadToEnd());
+                    }
+                }
+            }
+            catch (System.Net.WebException ex)
+            {
+                string details = "status=" + ex.Status;
+                try
+                {
+                    var httpResponse = ex.Response as System.Net.HttpWebResponse;
+                    if (httpResponse != null)
+                        details += " httpcode=" + (int)httpResponse.StatusCode;
+                }
+                catch
+                {
+                }
+                DiagnosticLog.Write("reset-credits-fetch-failed", details);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                DiagnosticLog.Write(
+                    "reset-credits-fetch-failed",
+                    "type=" + ex.GetType().Name);
+                return null;
+            }
+        }
+
+        private static ResetCreditsInfo Parse(string json)
+        {
+            if (string.IsNullOrEmpty(json))
+                return null;
+            var root = new JavaScriptSerializer().DeserializeObject(json)
+                as Dictionary<string, object>;
+            if (root == null)
+                return null;
+
+            var info = new ResetCreditsInfo();
+            long available;
+            if (TryLong(root, "available_count", out available))
+                info.AvailableCount = (int)available;
+
+            DateTime? earliestExpiry = null;
+            DateTime? earliestGranted = null;
+            var credits = root.ContainsKey("credits")
+                ? root["credits"] as object[]
+                : null;
+            if (credits != null)
+            {
+                foreach (object item in credits)
+                {
+                    var credit = item as Dictionary<string, object>;
+                    if (credit == null)
+                        continue;
+                    string status = GetString(credit, "status");
+                    if (!string.Equals(status, "available", StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    DateTime expiry = ParseUtcDate(GetString(credit, "expires_at"));
+                    if (expiry == DateTime.MinValue)
+                        continue;
+                    DateTime granted = ParseUtcDate(GetString(credit, "granted_at"));
+                    if (!earliestExpiry.HasValue || expiry < earliestExpiry.Value)
+                    {
+                        earliestExpiry = expiry;
+                        earliestGranted = granted == DateTime.MinValue
+                            ? (DateTime?)null
+                            : granted;
+                    }
+                }
+            }
+
+            info.EarliestExpiry = earliestExpiry;
+            info.EarliestGranted = earliestGranted;
+            return info;
+        }
+
+        private static DateTime ParseUtcDate(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return DateTime.MinValue;
+            DateTime parsed;
+            if (!DateTime.TryParse(
+                    value,
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                    out parsed))
+                return DateTime.MinValue;
+            return parsed.ToLocalTime();
+        }
+
+        private static Dictionary<string, object> GetDictionary(
+            Dictionary<string, object> source, string key)
+        {
+            object value;
+            if (source == null ||
+                !source.TryGetValue(key, out value) || value == null)
+                return null;
+            return value as Dictionary<string, object>;
+        }
+
+        private static string GetString(
+            Dictionary<string, object> source, string key)
+        {
+            object value;
+            if (source == null || !source.TryGetValue(key, out value) || value == null)
+                return null;
+            return value as string;
+        }
+
+        private static bool TryLong(
+            Dictionary<string, object> source, string key, out long value)
+        {
+            value = 0;
+            object raw;
+            if (source == null || !source.TryGetValue(key, out raw) || raw == null)
+                return false;
+            return long.TryParse(
+                raw.ToString(), NumberStyles.Any, CultureInfo.InvariantCulture, out value);
+        }
     }
 
     internal sealed class RateSnapshotStabilizer
@@ -2543,11 +3000,61 @@ namespace CodexRateMonitorNative
     {
         public const int BottomRightWidth = 252;
         public const int BottomRightHeight = 78;
+        public const int BottomRightHeightWithCredits = 106;
+        public const int TopWidthWithCredits = 622;
 
         public static RectangleF GetBottomRightCardBounds(bool primary)
         {
             // Six pixels between rows keeps larger user-selected fonts legible.
             return new RectangleF(3, primary ? 3 : 42, 246, 33);
+        }
+
+        public static RectangleF GetCreditsRowBounds()
+        {
+            return new RectangleF(3, 81, 246, 22);
+        }
+
+        public static void DrawCreditsText(
+            Graphics graphics,
+            RectangleF bounds,
+            string count,
+            string expiry,
+            Font mainFont,
+            Font smallFont,
+            Brush textBrush,
+            Brush deadlineBrush)
+        {
+            const float leftPadding = 7f;
+            const float rightPadding = 7f;
+
+            using (StringFormat textFormat = (StringFormat)StringFormat.GenericTypographic.Clone())
+            {
+                textFormat.FormatFlags |= StringFormatFlags.NoWrap |
+                                          StringFormatFlags.MeasureTrailingSpaces;
+
+                // Same single-line composition as DrawUsageText: bold count on
+                // the left, right-aligned deadline in the small font.
+                float centerLine = bounds.Top + (bounds.Height - 4f) / 2f;
+                float mainTop = centerLine - GetCellHeight(mainFont) / 2f;
+                float smallTop = centerLine - GetCellHeight(smallFont) / 2f;
+
+                graphics.DrawString(count, mainFont, textBrush,
+                    new PointF(bounds.Left + leftPadding, mainTop), textFormat);
+
+                using (StringFormat expiryFormat = (StringFormat)textFormat.Clone())
+                {
+                    expiryFormat.Alignment = StringAlignment.Far;
+                    expiryFormat.Trimming = StringTrimming.EllipsisCharacter;
+                    float expiryHeight = GetCellHeight(smallFont) + 2f;
+                    graphics.DrawString(expiry, smallFont, deadlineBrush,
+                        new RectangleF(
+                            bounds.Left + leftPadding,
+                            smallTop,
+                            bounds.Width - leftPadding - rightPadding,
+                            expiryHeight),
+                        expiryFormat);
+                }
+            }
         }
 
         public static void DrawUsageText(
