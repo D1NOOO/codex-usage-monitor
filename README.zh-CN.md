@@ -6,119 +6,72 @@
 
 **简体中文** · [繁體中文](README.zh-TW.md) · [English](README.md)
 
-一个原生 Windows 托盘小工具，在 ChatGPT 桌面端的 Codex 界面旁显示当前 5 小时窗口和
-7 天窗口的剩余或已用百分比及本地重置时间。
+一个原生 Windows 托盘小工具，在 ChatGPT 桌面端的 Codex 界面旁显示当前 5 小时与
+7 天用量窗口，并展示可用的限额重置券。
 
 > [!IMPORTANT]
-> 这是非官方社区项目，与 OpenAI 无隶属、背书或支持关系。
-> `codex app-server` 属于本地/实验性协议，未来 ChatGPT 桌面端或 Codex 版本可能调整。
+> 非官方社区项目，与 OpenAI 无隶属关系。`codex app-server` 是本地实验性协议，
+> 未来版本可能调整。
 
-## 快速使用
+## 界面截图
 
-1. 打开 ChatGPT 桌面端，完成登录，并切到你要监视的 Codex 界面。
-   本工具只显示 ChatGPT 账户订阅侧的用量窗口；API Key 或 API 登录方式不会暴露 Codex
-   的 5 小时 / 7 天窗口，因此无法通过本工具查看。
-2. 在解压后的发布文件夹中运行 `CodexRateMonitor.exe`。程序没有主窗口，会出现在
-   Windows 右下角通知区域，也可能先被收进 `^` 隐藏区域。
-3. 将 ChatGPT/Codex 窗口切到前台。悬浮条只在该窗口处于前台时显示，切到其他应用时会自动隐藏。
-4. 右键托盘图标。**外观设置** 是第一项，可在这里调整位置、大小、颜色、透明度、语言和用量显示模式。
-5. 点击 **立即刷新** 可强制读取一次用量；选择 **顶部标题栏** 或 **右下角** 可移动悬浮条。
-   双击托盘图标也会打开外观设置。
+悬浮条支持 1 行与多行两种布局。多行布局中的重置券卡片会按到期时间分级变色：
+正常 → 警告（≤7 天）→ 危险染色（≤3 天），无券时自动隐藏。
 
-如果看起来“没启动”，请先检查托盘 `^` 隐藏区域，退出旧版监视器进程，再重新运行当前版本并把
-ChatGPT/Codex 切到前台。
+![多行布局](docs/overlay-multirow-credits-zh-cn.png)
 
-![外观设置](docs/appearance-settings-zh-cn.png)
+1 行布局把 5 小时、7 天与重置券卡片横向排成一行，适合嵌入标题栏。
 
-### 界面截图
+![1 行布局](docs/overlay-oneline-credits-zh-cn.png)
 
-| | |
-|---|---|
-| ![多行布局与重置券卡片](docs/overlay-multirow-credits-zh-cn.png) | ![1 行布局与重置券卡片](docs/overlay-oneline-credits-zh-cn.png) |
-| *多行布局 + 重置券卡片* | *1 行布局 + 重置券卡片* |
-| ![托盘多行悬浮提示](docs/tray-tooltip-zh-cn.png) | ![外观设置与重置券开关](docs/appearance-settings-reset-credits-zh-cn.png) |
-| *托盘多行悬浮提示* | *外观设置中的「显示重置券」开关* |
+鼠标悬停托盘图标可查看分行显示的用量与重置券摘要。
+
+![托盘悬浮提示](docs/tray-tooltip-zh-cn.png)
+
+外观设置提供实时预览：位置、字体、颜色、透明度，以及「显示重置券（只读查询）」开关。
+
+![外观设置](docs/appearance-settings-reset-credits-zh-cn.png)
 
 ## 功能
 
-- 默认显示 5 小时与 7 天窗口的剩余百分比，也可切换为显示已用。
-- 进度条长度及警告/危险颜色会随显示模式同步变化。
-- 支持右下角、顶部标题栏两种位置。
-- 1 行 / 多行两种布局：多行布局会在有重置券时自动增加一张卡片，无券时自动收回。
-- 支持两种悬浮模式：
-  - 吸附模式（默认）跟随前台的 ChatGPT/Codex 窗口，切到其他应用时自动隐藏；
-  - 桌面悬浮模式脱离客户端，独立漂浮在 Windows 桌面上，不会因切换应用而隐藏，
-    且始终置顶（覆盖任务栏，类似桌面歌词）。可拖拽移动位置，位置会被记住。
-- 重置券卡片：显示可用的限额重置券数量和最早到期时间，附带 30 天生命周期进度条。
-  **严格只读**——只查询，绝不核销。颜色分级：正常 → 警告（≤7 天）→ 危险染色（≤3 天）；
-  无券时卡片自动隐藏。
-- 多行托盘悬浮提示：用量标题、双窗口百分比、重置券信息分行显示。
-- 常驻 app-server：周期刷新使用轻量 `account/rateLimits/read` 请求，
-  并合并 `account/rateLimits/updated` 推送，不再按固定周期重启 CLI，
-  后台流量保持在 KB 量级。ChatGPT/Codex 窗口最小化时，刷新自动降频到
-  `MinimizedRefreshSeconds`（默认 300 秒）。
-- 原生 GUI EXE，无 CMD、Node 或 PowerShell 包装窗口。
-- 悬浮条不抢焦点，鼠标点击会穿透到 ChatGPT/Codex。
-- 完整外观设置：字体、字号、缩放、透明度、圆角、颜色和浅色/深色预设。
-- 支持简体中文、繁體中文、English，可自动跟随系统或手动选择。
-- 可从托盘启用/取消开机启动。
-- 后台检测 GitHub Release；发现新版本时在托盘图标和用量悬浮条显示红点。
-- 在更新窗口展示新版本功能，校验 Release ZIP 后原地更新并保留快捷方式、开机启动项和 `settings.json`。
+- 悬浮条支持桌面悬浮（置顶、可拖拽、点击穿透）与窗口吸附两种模式，
+  1 行 / 多行两种布局，剩余 / 已用两种显示口径。
+- 重置券卡片：只读展示可用数量与最早到期时间，绝不调用核销接口。
+- 托盘悬浮提示分行显示用量与重置券摘要。
+- 流量极低：app-server 常驻，周期刷新只用轻量请求 + 推送合并，
+  窗口最小化时自动降频（见下文「流量消耗」）。
+- 其余：三语界面（简中 / 繁中 / 英文）、完整外观编辑、开机启动、
+  后台更新检测与校验式原地更新。
 
 ## 运行要求
 
-- Windows 10/11
-- .NET Framework 4.8
-- 已安装支持 Codex 的 ChatGPT 桌面端；旧版 Codex App 仍兼容。
-- 可用的原生 Codex 可执行文件。程序会优先使用正在运行的 ChatGPT 桌面端内置的
-  可执行文件，然后回退到用户 PATH 中支持以下命令的独立 Codex CLI：
+- Windows 10/11，.NET Framework 4.8。
+- 已登录的 ChatGPT 桌面端（旧版 Codex App + Codex CLI 仍兼容）。
+  API Key 登录无法显示订阅用量窗口。
 
-  ```powershell
-  codex app-server
-  ```
+## 安装
 
-- ChatGPT/Codex 已正常登录并能返回用量窗口数据。API Key 或 API 登录方式无法提供本工具显示的
-  5 小时 / 7 天 Codex 用量窗口。
-- 用户本机环境很重要：该机器必须能运行 `codex app-server`，并且它能读取到与 ChatGPT
-  桌面端或 Codex CLI 相同的登录状态。
+1. 从 [Releases](https://github.com/D1NOOO/codex-usage-monitor/releases) 下载
+   `CodexRateMonitor-VERSION-windows-x64.zip`，按需校验 `SHA256SUMS.txt`。
+2. 解压到固定位置，运行 `CodexRateMonitor.exe`。程序无主窗口，常驻通知区域
+   （可能先被收进 `^` 隐藏区）。右键托盘图标配置，双击打开外观设置。
 
-## 安装与使用
+EXE 未做商业签名，SmartScreen 可能提示未知发布者；请只从 Releases 下载并校验。
 
-1. 在仓库 **Releases** 页面下载
-   `CodexRateMonitor-VERSION-windows-x64.zip`。
-2. 可使用 `SHA256SUMS.txt` 校验文件。
-3. 解压整个目录到固定位置。
-4. 双击 `CodexRateMonitor.exe`。
+## 流量消耗
 
-程序没有主窗口，会常驻 Windows 右下角通知区域。新图标可能先被系统收入
-`^` 隐藏区域。
+程序专门为低流量设计（背景见
+[issue #5](https://github.com/D1NOOO/codex-usage-monitor/issues/5)）：
 
-当前发布的 EXE 未进行商业代码签名，SmartScreen 可能提示未知发布者。
-请只从本仓库 Release 下载，并校验 SHA256 或 GitHub 构建来源证明。
+| 场景 | 行为 | 实测流量 |
+|---|---|---|
+| ChatGPT/Codex 窗口可见 | 每 `RefreshSeconds`（默认 60s）一次轻量读取 | ~1 KB/分钟 |
+| 窗口最小化 / 仅托盘 | 降频到 `MinimizedRefreshSeconds`（默认 300s） | ~0.2 KB/分钟 |
+| 重置券查询 | 每 `ResetCreditsSeconds`（默认 30 分钟）一次只读请求 | 可忽略 |
 
-右击托盘图标可刷新、检测更新、切换显示模式、打开外观设置、设置开机启动或退出。
-双击托盘图标直接打开外观设置。
-
-### 软件更新
-
-程序启动约 10 秒后会在后台检测一次最新稳定版，运行期间每 6 小时复查。
-发现新版时，托盘图标和用量悬浮条会显示红点。手动点击“检测更新”时，最新版会显示提示；
-有新版则打开更新窗口并展示 GitHub Release 中的新功能说明。
-
-点击“更新”后，程序会下载官方 Windows ZIP 和 `SHA256SUMS.txt`，校验成功后在原目录更新并重启。
-EXE 路径保持不变，因此桌面快捷方式和开机启动项可继续使用；现有 `settings.json` 不会被覆盖。
-
-### 语言
-
-在 **外观设置 → 界面语言** 中选择：
-
-- 自动（跟随系统）
-- 简体中文
-- 繁體中文
-- English
-
-保存后，托盘菜单、状态提示、设置窗口、悬浮条标签和日期格式都会切换。
-重新打开外观设置即可看到整个窗口使用新语言。
+app-server 进程全程常驻，周期刷新只发送轻量 `account/rateLimits/read` 请求并合并
+`account/rateLimits/updated` 推送，不按固定周期重启进程。旧方案每 60 秒重启一次约
+产生 2.9 GB/天流量；新方案实测不足 10 MB/天。
 
 ## 实现原理
 
@@ -130,108 +83,34 @@ flowchart LR
     Server --> API["OpenAI 服务"]
 ```
 
-悬浮条会跟随前台的 `ChatGPT.exe` 桌面窗口，同时仍识别旧版 `Codex.exe` 窗口。
-用量数据不是来自截图、OCR 或 ChatGPT UI 内部接口，而是来自本机 Codex CLI 的 app-server
-协议。
+程序按「桌面端内置 → npm 安装 → PATH」的顺序寻找 Codex 可执行文件，启动
+`codex.exe app-server`，发送 `account/rateLimits/read`，将 `primary` 渲染为 5 小时窗口、
+`secondary` 为 7 天窗口，并合并 `account/rateLimits/updated` 推送。
 
-程序会按以下顺序寻找可运行的 Codex 命令：
-
-1. ChatGPT 桌面端内置的 `resources\codex.exe`，前提是 Windows 允许外部进程直接执行它。
-2. npm/global 安装的 Codex CLI 内部原生可执行文件。
-3. 用户 PATH 中的 `codex.exe`、`codex.cmd` 或 `codex.ps1`。
-
-然后直接启动：
-
-```text
-codex.exe app-server
-```
-
-初始化完成后发送：
-
-```json
-{"method":"account/rateLimits/read","id":11}
-```
-
-响应包含 `usedPercent`、`windowDurationMins`、`resetsAt` 等字段。
-程序把 `primary` 渲染为 5 小时窗口，把 `secondary` 渲染为 7 天窗口；
-同时合并 `account/rateLimits/updated` 的稀疏更新。
-
-app-server 进程在整个会话期间保持常驻。周期刷新只通过同一连接发送轻量的
-`account/rateLimits/read` 请求，并合并 `account/rateLimits/updated` 推送；
-只有在读通道疑似钉死时才会做一次低频重同步重启。ChatGPT/Codex 窗口最小化时，
-刷新频率自动降到 `MinimizedRefreshSeconds`。
-
-### 重置券
-
-![多行布局中的重置券卡片](docs/overlay-multirow-credits-zh-cn.png)
-
-OpenAI 会向部分套餐发放可存储的限额重置券。启用 `ShowResetCredits` 后，程序使用
-`~/.codex/auth.json` 中的访问令牌（同机同账号）查询只读接口
-`chatgpt.com/backend-api/wham/rate-limit-reset-credits`，显示可用数量和最早的
-`expires_at`，每 `ResetCreditsSeconds`（默认 30 分钟）刷新一次。
-
-该查询**严格只读**：程序绝不调用重置券的核销/消费接口。访问令牌只在单次请求期间
-保存在内存中，不会被记录、存储或发送到其他任何地方。查询失败时卡片会安静地隐藏。
-
-登录、令牌刷新和与 OpenAI 的网络通信全部由 ChatGPT/Codex 负责，本工具不实现认证。
-
-## 隐私与安全
-
-本工具会：
-
-- 仅通过重定向标准输入/输出与子进程 `codex app-server` 通信；
-- 在内存里暂存当前用量用于显示；
-- 在 `settings.json` 保存显示和诊断偏好；
-- 在 `%LOCALAPPDATA%\CodexRateMonitor\logs` 写入脱敏诊断日志，并自动清理过期文件；
-- 在后台读取本仓库公开的 GitHub Release 信息；仅在用户点击“更新”后下载 Release ZIP 和校验文件；
-- 启用 `ShowResetCredits` 时，本地读取 `~/.codex/auth.json` 获取访问令牌，仅用于上述只读的
-  重置券查询——令牌只在单次请求期间存在于内存，不会被记录、存储或发送到其他任何地方；
-- 用户选择开机启动时，在
-  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 写入一项。
-
-本工具不会：
-
-- 把访问令牌存储、打印或发送到上述只读查询之外的任何地方；
-- 调用重置券的核销/消费接口——重置券只被查询，绝不被使用；
-- 加入遥测或统计；
-- 要求 OpenAI API Key；
-- 把用量发给开发者控制的服务器。
-
-提交 Issue 时，请勿上传 `auth.json`、令牌、账户信息或未经脱敏的桌面截图。
-安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。
-仓库公开前，请维护者逐项检查 [PUBLISHING.md](PUBLISHING.md)。
+登录、令牌刷新和与 OpenAI 的通信全部由 ChatGPT/Codex 负责，本工具不实现认证。
+唯一例外：启用重置券时，程序本地读取 `~/.codex/auth.json` 的访问令牌，仅用于查询只读接口
+`chatgpt.com/backend-api/wham/rate-limit-reset-credits`——令牌只在单次请求期间存于内存，
+绝不核销、不存储、不外传。诊断日志写入 `%LOCALAPPDATA%\CodexRateMonitor\logs`
+并自动清理，不含令牌与账户信息。安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。
 
 ## 配置
 
-Release 中的 `settings.json` 来自隐私安全的
-`config/settings.default.json`。它包含显示和诊断偏好：
+`settings.json`（来自 `config/settings.default.json`）常用字段：
 
-| 字段 | 可选值 |
+| 字段 | 说明 |
 |---|---|
-| `Language` | `auto`、`zh-CN`、`zh-TW`、`en` |
-| `Position` | `top`（默认）、`bottom-right`（旧的 `bottom-left` 会自动迁移） |
-| `OverlayMode` | `desktop`（默认）桌面悬浮模式（始终置顶）；`attach` 吸附 ChatGPT/Codex 窗口 |
-| `DesktopX` / `DesktopY` | 记忆的桌面悬浮位置（0,0 时使用默认的右上角位置） |
-| `UsageDisplay` | `remaining`（默认）、`used` |
-| `RefreshSeconds` | 30–900（窗口可见时的刷新间隔） |
-| `MinimizedRefreshSeconds` | 60–3600（默认 300），ChatGPT/Codex 窗口最小化时的刷新间隔 |
-| `ShowResetCredits` | `true`（默认）、`false` |
-| `ResetCreditsSeconds` | 300–86400（默认 1800），重置券只读查询间隔 |
-| `DiagnosticsEnabled` | `true`（默认）、`false` |
-| `DiagnosticRetentionDays` | 1–30（默认 7） |
-| `Style.Scale` | 0.75–1.50 |
-| `Style.Opacity` | 0.50–1.00 |
-| `Style.FontSize` | 10–22 |
-| `Style.ResetFontSize` | 9–18 |
+| `Language` | `auto` / `zh-CN` / `zh-TW` / `en` |
+| `OverlayMode` | `desktop`（默认，桌面悬浮）/ `attach`（吸附窗口） |
+| `UsageDisplay` | `remaining`（默认）/ `used` |
+| `RefreshSeconds` | 30–900，窗口可见时的刷新间隔（默认 60） |
+| `MinimizedRefreshSeconds` | 60–3600，最小化时的刷新间隔（默认 300） |
+| `ShowResetCredits` | 重置券卡片开关（默认开） |
+| `ResetCreditsSeconds` | 300–86400，重置券查询间隔（默认 1800） |
+| `DiagnosticsEnabled` / `DiagnosticRetentionDays` | 诊断日志开关与保留天数 |
 
-颜色使用 `#RRGGBB` 或 `#RRGGBBAA`。个人运行产生的 `settings.json`
-已被 `.gitignore` 排除，仓库只提交默认模板。
+其余外观字段（字体、颜色 `#RRGGBB`、缩放、透明度等）见默认模板或外观设置界面。
 
-诊断日志只记录时间、请求/通知类型、原始限额百分比、窗口长度、重置时间、
-解析结果和脱敏错误分类；不会记录完整 app-server 消息、令牌、账户标识或认证文件。
-程序启动时会清理一次，运行期间最多每小时清理一次。
-
-## 从源码构建
+## 构建与发布
 
 ```powershell
 git clone https://github.com/D1NOOO/codex-usage-monitor.git
@@ -239,88 +118,31 @@ cd codex-usage-monitor
 .\scripts\build.ps1 -Package
 ```
 
-构建脚本使用 Windows/Visual Studio 自带的 .NET Framework 4.8 编译器，
-不下载 NuGet 依赖。输出位于 `artifacts/`。CI 会先运行
-`scripts/verify.ps1`，检查三语言键、JSON/PowerShell 语法、误提交的个人
-设置、个人路径和常见凭据格式。
+输出位于 `artifacts/`。CI 先运行 `scripts/verify.ps1`（三语键、JSON/PowerShell 语法、
+隐私与凭据扫描）。发布时更新 `version.txt`、推送同名 tag，
+`.github/workflows/release.yml` 自动构建并创建带来源证明的 Release。
 
-## GitHub Actions 自动发布
+## FAQ
 
-1. 更新 `version.txt` 并提交。
-2. 创建同版本标签：
+### 找不到 Codex 可执行文件 / 未登录
 
-   ```powershell
-   git tag v0.1.0
-   git push origin main
-   git push origin v0.1.0
-   ```
-
-3. Release 工作流会自动：
-   - 检查标签和 `version.txt` 一致；
-   - 在 `windows-latest` 上编译；
-   - 生成 ZIP 和 `SHA256SUMS.txt`；
-   - 生成 GitHub 构建来源证明；
-   - 创建 Release 和自动发布说明。
-
-工作流只使用仓库范围的 `GITHUB_TOKEN`，不需要个人 PAT。发布任务仅授予
-`contents: write`、`id-token: write`、`attestations: write`。
-所有官方 Action 都固定到完整 Commit SHA，并由 Dependabot 每周检查更新。
-
-验证构建来源：
-
-```powershell
-gh attestation verify CodexRateMonitor-VERSION-windows-x64.zip `
-  --repo D1NOOO/codex-usage-monitor
-```
-
-## 常见问题
-
-### 提示找不到 Codex 可执行文件
-
-请先打开或更新 ChatGPT 桌面端。如果你使用独立 CLI，请打开新的 PowerShell 窗口检查：
-
-```powershell
-codex --version
-codex app-server --help
-```
-
-如果 ChatGPT 桌面端没有提供内置可执行文件，且第二条命令不可用，请更新/安装 Codex CLI。
-
-`codex app-server --help` 只能证明命令存在，并不会读取用量。排查登录状态请运行：
-
-```powershell
-codex doctor
-```
-
-如果 Doctor 显示 `stored auth mode api_key`，或没有 stored ChatGPT tokens，CLI 就无法读取
-ChatGPT/Codex 的 5 小时 / 7 天用量窗口。请先在 Codex CLI 或 ChatGPT 桌面端完成 ChatGPT
-账户登录，然后重试。
-
-### 提示未登录
-
-请在 ChatGPT 桌面端的 Codex 界面或 CLI 正常登录。本工具不会接触或代管凭据。
-
-如果悬浮条提示需要 ChatGPT 账户登录，说明 app-server 已经启动，但当前 Codex CLI 是 API Key
-登录态。API Key 可以用于模型调用，但不能返回 ChatGPT/Codex 订阅用量窗口。
+先打开或更新 ChatGPT 桌面端；独立 CLI 用户用 `codex --version` 与
+`codex app-server --help` 确认可用，`codex doctor` 排查登录。若为 API Key 登录态，
+请改用 ChatGPT 账户登录——API Key 无法返回订阅用量窗口。
 
 ### 悬浮条不显示
 
-将 ChatGPT/Codex 窗口切到前台；确认托盘图标仍在；重新选择位置并点击“立即刷新”。
+把 ChatGPT/Codex 窗口切到前台（吸附模式只在窗口可见时显示）；确认托盘图标在运行；
+必要时点击「立即刷新」。
+
+### UI 更新后位置偏了
+
+位置偏移适配当前桌面端布局，界面更新后可能需要调整。欢迎提交带脱敏截图的 issue。
 
 ## 已知限制
 
-- 仅支持 Windows。
-- 依赖 Codex 本地实验性 app-server 协议。
-- 位置偏移适配当前 ChatGPT 桌面端 Codex 布局和旧版 Codex 桌面布局，UI 更新后可能需要调整。
-- Release EXE 尚未代码签名。
-- 用量窗口的可用性和含义由 Codex/OpenAI 决定。
+仅支持 Windows；依赖本地实验性 app-server 协议；Release EXE 未做代码签名。
 
-## 贡献与许可证
+## 许可证
 
-参阅 [CONTRIBUTING.md](CONTRIBUTING.md)。所有可见字符串必须同时维护
-简中、繁中和英文；严禁提交凭据、个人路径、真实运行设置或隐私截图。
-
-许可证：[MIT](LICENSE)
-
-Codex 和 OpenAI 是其权利人的商标。本项目为非官方项目，不使用 OpenAI
-品牌资产。
+[MIT](LICENSE)。Codex 和 OpenAI 是其权利人的商标，本项目为非官方项目。
