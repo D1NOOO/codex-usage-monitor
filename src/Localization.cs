@@ -17,7 +17,7 @@ namespace CodexRateMonitorNative
                         {"CheckUpdates", "检测更新…"},
                         {"CheckingUpdates", "正在检测更新…"},
                         {"UpdateAvailableMenu", "发现新版本 v{0}"},
-                        {"UpdateAvailableTray", "Codex 用量监视器：发现新版本 v{0}"},
+
                         {"UpdateTitle", "软件更新"},
                         {"UpdateAvailableTitle", "发现新版本 v{0}"},
                         {"UpdateVersionLine", "当前版本 v{0}  →  最新版本 v{1}"},
@@ -113,7 +113,7 @@ namespace CodexRateMonitorNative
                         {"CheckUpdates", "檢查更新…"},
                         {"CheckingUpdates", "正在檢查更新…"},
                         {"UpdateAvailableMenu", "發現新版本 v{0}"},
-                        {"UpdateAvailableTray", "Codex 用量監視器：發現新版本 v{0}"},
+
                         {"UpdateTitle", "軟體更新"},
                         {"UpdateAvailableTitle", "發現新版本 v{0}"},
                         {"UpdateVersionLine", "目前版本 v{0}  →  最新版本 v{1}"},
@@ -209,7 +209,7 @@ namespace CodexRateMonitorNative
                         {"CheckUpdates", "Check for updates…"},
                         {"CheckingUpdates", "Checking for updates…"},
                         {"UpdateAvailableMenu", "Update v{0} available"},
-                        {"UpdateAvailableTray", "Codex Rate Monitor: update v{0} available"},
+
                         {"UpdateTitle", "Software update"},
                         {"UpdateAvailableTitle", "Update v{0} is available"},
                         {"UpdateVersionLine", "Current v{0}  →  Latest v{1}"},
@@ -242,8 +242,8 @@ namespace CodexRateMonitorNative
                         {"StartFailed", "Start failed: {0}"},
                         {"UsageTray", "Codex {0}: 5h {1} · 7d {2}"},
                         {"TrayUsageTitle", "Codex {0}:"},
-                        {"TrayCreditsTitle", "Reset credits:"},
-                        {"TrayCreditsDetail", "{0} left, earliest expires {1}"},
+                        {"TrayCreditsTitle", "Reset:"},
+                        {"TrayCreditsDetail", "{0} left, exp {1}"},
                         {"CreditsBadge", "{0} resets"},
                         {"CreditsExpire", "exp {0}"},
                         {"TrayCredits", " · reset ×{0} {1}"},

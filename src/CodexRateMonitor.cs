@@ -601,14 +601,13 @@ namespace CodexRateMonitorNative
         {
             if (updateItem != null)
                 updateItem.Text = UpdateMenuText();
-            bool available = availableUpdate != null;
-            overlay.SetUpdateAvailable(available);
-            if (available)
+            // Update presence is signaled only via the tray icon red-dot
+            // badge; tooltip and overlay stay purely about usage.
+            if (availableUpdate != null)
             {
                 if (updateAvailableIcon == null)
                     updateAvailableIcon = CreateBadgedIcon(applicationIcon ?? SystemIcons.Application);
                 trayIcon.Icon = updateAvailableIcon;
-                trayIcon.Text = SafeTrayText(I18n.F("UpdateAvailableTray", availableUpdate.Version));
             }
             else
             {
@@ -661,9 +660,16 @@ namespace CodexRateMonitorNative
 
         private static string SafeTrayText(string value)
         {
-            if (value.Length > 63)
-                return value.Substring(0, 63);
-            return value;
+            if (value.Length <= 63)
+                return value;
+            // Windows tray tooltips hold at most 63 chars. Cut at the last
+            // line break so a sentence is never chopped mid-word (which used
+            // to render as garbage like "earlies"); otherwise trim hard.
+            string cut = value.Substring(0, 63);
+            int nl = cut.LastIndexOf('\n');
+            if (nl > 0)
+                return cut.Substring(0, nl);
+            return cut.TrimEnd();
         }
 
         // Shows a short-lived tray notice and schedules the usage tooltip to
@@ -830,7 +836,6 @@ namespace CodexRateMonitorNative
         private RateSnapshot snapshot;
         private ResetCreditsInfo resetCredits;
         private string status = I18n.T("Connecting");
-        private bool updateAvailable;
 
         private string overlayMode = "attach";
         private bool dragging;
@@ -961,12 +966,6 @@ namespace CodexRateMonitorNative
         {
             if (snapshot == null)
                 status = value;
-            Invalidate();
-        }
-
-        public void SetUpdateAvailable(bool value)
-        {
-            updateAvailable = value;
             Invalidate();
         }
 
@@ -1231,17 +1230,6 @@ namespace CodexRateMonitorNative
                 if (ShowCreditsBadge)
                     DrawCreditsCard(g, new RectangleF(469, 5, 148, 30),
                         card, text, muted, track);
-            }
-
-            if (updateAvailable)
-            {
-                float right = cardW;
-                using (var borderBrush = new SolidBrush(Color.White))
-                using (var dotBrush = new SolidBrush(Color.FromArgb(232, 67, 67)))
-                {
-                    g.FillEllipse(borderBrush, right - 13f, 3f, 10f, 10f);
-                    g.FillEllipse(dotBrush, right - 11f, 5f, 6f, 6f);
-                }
             }
         }
 
