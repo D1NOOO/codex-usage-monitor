@@ -86,6 +86,14 @@ namespace CodexRateMonitorNative
         // per pointless restart. Real staleness waits at most 6 hours.
         private const int ResyncCooldownMinutes = 360;
         private const int AnomalyResyncCooldownSeconds = 120;
+        private const int AuthFailuresBeforeResync = 3;
+        private const int AuthProbeSeconds = 300;
+        private const int AuthRecoveryTimeoutSeconds = 180;
+        private int authFailures;
+        private bool authResyncAttempted;
+        private bool authDead;
+        private DateTime authAttemptAt = DateTime.MinValue;
+        private int authReadFloor;
         private bool disposed;
 
         public MonitorContext(bool showSettings)
@@ -105,6 +113,7 @@ namespace CodexRateMonitorNative
             appServer.SnapshotReceived += OnSnapshotReceived;
             appServer.StatusChanged += OnStatusChanged;
             appServer.UpdateNotificationReceived += OnUpdateNotification;
+            appServer.AuthRevoked += OnAuthRevoked;
 
             updateChecker = new UpdateChecker(BuildVersion.Value);
             updateChecker.CheckCompleted += OnUpdateCheckCompleted;
@@ -161,7 +170,7 @@ namespace CodexRateMonitorNative
         {
             var menu = new ContextMenuStrip();
             menu.Items.Add(I18n.T("AppearanceMenu"), null, delegate { ShowAppearanceSettings(); });
-            menu.Items.Add(I18n.T("RefreshNow"), null, delegate { RequestRateLimits(); });
+            menu.Items.Add(I18n.T("RefreshNow"), null, delegate { RefreshNow(); });
             updateItem = new ToolStripMenuItem(UpdateMenuText());
             updateItem.Click += delegate { CheckForUpdates(); };
             menu.Items.Add(updateItem);
@@ -199,6 +208,12 @@ namespace CodexRateMonitorNative
         private void OnTimerTick(object sender, EventArgs e)
         {
             DiagnosticLog.CleanupIfDue();
+            if (authResyncAttempted && !authDead &&
+                (DateTime.Now - authAttemptAt).TotalSeconds >= AuthRecoveryTimeoutSeconds)
+            {
+                DiagnosticLog.Write("auth-resync-timeout", null);
+                MarkAuthDead();
+            }
 
             // Visible = normal refresh cadence. Minimized/tray = the app-server
             // stays alive but polls at the reduced MinimizedRefreshSeconds
@@ -213,9 +228,9 @@ namespace CodexRateMonitorNative
                 // Topmost re-assertion is handled by the dedicated 50ms
                 // topmostTimer, not here, for tighter recovery latency.
                 desktopVisible = WindowLocator.FindDesktopMainWindow() != IntPtr.Zero;
-                if (!appServer.IsRunning &&
+                if (!appServer.IsRunning && !authDead &&
                     (desktopVisible || WindowLocator.IsDesktopAppRunning()))
-                    StartAppServer();
+                    AutoStartAppServer();
             }
             else
             {
@@ -226,8 +241,8 @@ namespace CodexRateMonitorNative
                 if (desktopVisible)
                 {
                     overlay.AttachTo(desktopWindow);
-                    if (!appServer.IsRunning && WindowLocator.IsDesktopAppRunning())
-                        StartAppServer();
+                    if (!appServer.IsRunning && !authDead && WindowLocator.IsDesktopAppRunning())
+                        AutoStartAppServer();
                 }
                 else
                 {
@@ -242,6 +257,8 @@ namespace CodexRateMonitorNative
                     : Math.Max(
                         settings.RefreshSeconds,
                         settings.MinimizedRefreshSeconds);
+                if (authDead)
+                    refreshSeconds = Math.Max(refreshSeconds, AuthProbeSeconds);
                 if ((DateTime.Now - lastRequest).TotalSeconds >= refreshSeconds)
                     RequestRateLimits();
             }
@@ -273,12 +290,68 @@ namespace CodexRateMonitorNative
             }
         }
 
+        private void AutoStartAppServer()
+        {
+            if (authFailures > 0)
+            {
+                // A child exit during an auth incident consumes the single
+                // automatic restart allowance, too.
+                if (authResyncAttempted)
+                {
+                    MarkAuthDead();
+                    return;
+                }
+                authResyncAttempted = true;
+                authAttemptAt = DateTime.Now;
+                lastResyncAt = DateTime.Now;
+                DiagnosticLog.Write("auth-resync-restart", "reason=child-exit");
+            }
+            StartAppServer();
+            if (authResyncAttempted && !appServer.IsRunning)
+                MarkAuthDead();
+        }
+
+        private void RefreshNow()
+        {
+            if (authFailures == 0 && !authDead)
+            {
+                RequestRateLimits();
+                return;
+            }
+
+            // A manual retry is a new, explicit attempt. A further 401 before
+            // a valid snapshot returns directly to the terminal auth state.
+            authDead = false;
+            authFailures = 0;
+            authResyncAttempted = true;
+            authAttemptAt = DateTime.Now;
+            authReadFloor = appServer.LatestRequestId;
+            lastResyncAt = DateTime.Now;
+            overlay.ClearSnapshot(I18n.T("Connecting"));
+            trayIcon.Text = SafeTrayText(I18n.F("TrayStatus", I18n.T("Connecting")));
+            DiagnosticLog.Write("auth-manual-restart", null);
+            try
+            {
+                if (appServer.IsRunning)
+                    appServer.RefreshRateLimits(true);
+                else
+                    StartAppServer();
+                if (!appServer.IsRunning)
+                    MarkAuthDead();
+            }
+            catch (Exception ex)
+            {
+                DiagnosticLog.Write("auth-manual-restart-failed", "type=" + ex.GetType().Name);
+                MarkAuthDead();
+            }
+        }
+
         private void RequestRateLimits()
         {
             if (!appServer.IsRunning)
             {
-                if (WindowLocator.FindDesktopMainWindow() != IntPtr.Zero)
-                    StartAppServer();
+                if (!authDead && WindowLocator.FindDesktopMainWindow() != IntPtr.Zero)
+                    AutoStartAppServer();
                 return;
             }
 
@@ -294,10 +367,15 @@ namespace CodexRateMonitorNative
             appServer.RequestRateLimits();
         }
 
-        private void OnUpdateNotification()
+        private void OnUpdateNotification(int generation)
         {
-            updateNotificationSeen = true;
-            identicalReads = 0;
+            Ui(delegate
+            {
+                if (generation != appServer.Generation)
+                    return;
+                updateNotificationSeen = true;
+                identicalReads = 0;
+            });
         }
 
         // Detects a pinned read channel: when many consecutive reads return
@@ -354,10 +432,18 @@ namespace CodexRateMonitorNative
                    a.ResetsAt == b.ResetsAt;
         }
 
-        private void OnSnapshotReceived(RateSnapshot snapshot)
+        private void OnSnapshotReceived(RateSnapshot snapshot, int generation)
         {
             Ui(delegate
             {
+                if (generation != appServer.Generation)
+                    return;
+                if ((authFailures > 0 || authResyncAttempted || authDead) &&
+                    (!snapshot.ReplaceMissingWindows || snapshot.ReadRequestId <= authReadFloor))
+                {
+                    DiagnosticLog.Write("auth-snapshot-ignored", "reason=predates-failure");
+                    return;
+                }
                 string validation;
                 if (!snapshotStabilizer.TryAccept(
                     snapshot, DateTimeOffset.UtcNow, out validation))
@@ -372,7 +458,8 @@ namespace CodexRateMonitorNative
                         // inconsistent. Prefer a cheap re-read; only allow a
                         // full child restart after a cooldown so this can never
                         // turn into a restart storm.
-                        if ((DateTime.Now - lastResyncAt).TotalSeconds >=
+                        if (authFailures == 0 && !authResyncAttempted &&
+                            (DateTime.Now - lastResyncAt).TotalSeconds >=
                             AnomalyResyncCooldownSeconds)
                         {
                             lastResyncAt = DateTime.Now;
@@ -398,13 +485,21 @@ namespace CodexRateMonitorNative
                         "snapshot-confirmed",
                         AppServerClient.DescribeSnapshot(snapshot));
 
+                if (authFailures > 0 || authResyncAttempted || authDead)
+                {
+                    DiagnosticLog.Write("auth-recovered", null);
+                    authFailures = 0;
+                    authResyncAttempted = false;
+                    authDead = false;
+                    authAttemptAt = DateTime.MinValue;
+                }
                 overlay.SetSnapshot(snapshot);
                 DiagnosticLog.Write(
                     "snapshot-displayed",
                     "mode=" + settings.UsageDisplay +
                     " " + AppServerClient.DescribeSnapshot(snapshot));
-                lastSnapshot = snapshot;
                 TrackSnapshotFreshness(snapshot);
+                lastSnapshot = snapshot;
                 UpdateTrayText();
             });
         }
@@ -418,6 +513,8 @@ namespace CodexRateMonitorNative
         // length stays within the shell's 63-character NotifyIcon cap.
         private void UpdateTrayText()
         {
+            if (authFailures > 0 || authResyncAttempted || authDead)
+                return;
             if (lastSnapshot == null)
                 return;
             string text = string.Format(CultureInfo.InvariantCulture,
@@ -480,10 +577,70 @@ namespace CodexRateMonitorNative
             });
         }
 
-        private void OnStatusChanged(string status)
+        private void OnAuthRevoked(int generation, int latestRequestId)
         {
             Ui(delegate
             {
+                if (generation != appServer.Generation)
+                    return;
+                authReadFloor = Math.Max(authReadFloor, latestRequestId);
+                authFailures++;
+                DiagnosticLog.Write("auth-revoked", "count=" +
+                    authFailures.ToString(CultureInfo.InvariantCulture));
+                if (authFailures == 1)
+                {
+                    lastSnapshot = null;
+                    identicalReads = 0;
+                    overlay.ClearSnapshot(I18n.T("Connecting"));
+                    trayIcon.Text = SafeTrayText(I18n.F("TrayStatus", I18n.T("Connecting")));
+                }
+                if (authResyncAttempted)
+                {
+                    MarkAuthDead();
+                    return;
+                }
+                if (authFailures < AuthFailuresBeforeResync ||
+                    (DateTime.Now - lastResyncAt).TotalSeconds < AnomalyResyncCooldownSeconds)
+                    return;
+
+                authResyncAttempted = true;
+                authAttemptAt = DateTime.Now;
+                lastResyncAt = DateTime.Now;
+                DiagnosticLog.Write("auth-resync-restart", "reason=revoked");
+                try
+                {
+                    appServer.RefreshRateLimits();
+                    if (!appServer.IsRunning)
+                        MarkAuthDead();
+                }
+                catch (Exception ex)
+                {
+                    DiagnosticLog.Write("auth-resync-restart-failed", "type=" + ex.GetType().Name);
+                    MarkAuthDead();
+                }
+            });
+        }
+
+        private void MarkAuthDead()
+        {
+            if (authDead)
+                return;
+            authDead = true;
+            lastSnapshot = null;
+            lastRequest = DateTime.Now;
+            string status = I18n.T("AuthUnavailable");
+            overlay.ClearSnapshot(status);
+            trayIcon.Text = SafeTrayText(I18n.F("TrayStatus", status));
+            DiagnosticLog.Write("auth-dead", null);
+        }
+
+        private void OnStatusChanged(string status, int generation)
+        {
+            Ui(delegate
+            {
+                if (generation != appServer.Generation || authFailures > 0 ||
+                    authResyncAttempted || authDead)
+                    return;
                 overlay.SetStatus(status);
                 trayIcon.Text = SafeTrayText(I18n.F("TrayStatus", status));
             });
@@ -969,6 +1126,13 @@ namespace CodexRateMonitorNative
             Invalidate();
         }
 
+        public void ClearSnapshot(string value)
+        {
+            snapshot = null;
+            status = value;
+            Invalidate();
+        }
+
         public void SetResetCredits(ResetCreditsInfo value)
         {
             resetCredits = value;
@@ -1411,16 +1575,20 @@ namespace CodexRateMonitorNative
         private Thread outputThread;
         private Thread errorThread;
         private int requestId = 10;
+        private int generation;
         private bool disposed;
 
-        public event Action<RateSnapshot> SnapshotReceived;
-        public event Action<string> StatusChanged;
+        public event Action<RateSnapshot, int> SnapshotReceived;
+        public event Action<string, int> StatusChanged;
+        public event Action<int, int> AuthRevoked;
 
         // Raised whenever the server pushes account/rateLimits/updated. On a
         // long-lived app-server this proves the channel delivers fresh data.
-        public event Action UpdateNotificationReceived;
+        public event Action<int> UpdateNotificationReceived;
 
         public bool IsInitialized { get; private set; }
+        public int Generation { get { return Interlocked.CompareExchange(ref generation, 0, 0); } }
+        public int LatestRequestId { get { return Interlocked.CompareExchange(ref requestId, 0, 0); } }
 
         public bool IsRunning
         {
@@ -1495,18 +1663,22 @@ namespace CodexRateMonitorNative
             startInfo.StandardErrorEncoding = Encoding.UTF8;
 
             process = Process.Start(startInfo);
+            int startedGeneration = Interlocked.Increment(ref generation);
+            Process startedProcess = process;
             IsInitialized = false;
             DiagnosticLog.Write(
                 "app-server-started",
                 "pid=" + process.Id.ToString(CultureInfo.InvariantCulture) +
                 " executable=" + SafeExecutableName(candidate.FileName));
 
-            outputThread = new Thread(ReadOutput);
+            outputThread = new Thread(new ThreadStart(
+                delegate { ReadOutput(startedProcess, startedGeneration); }));
             outputThread.IsBackground = true;
             outputThread.Name = "Codex app-server output";
             outputThread.Start();
 
-            errorThread = new Thread(DrainErrors);
+            errorThread = new Thread(new ThreadStart(
+                delegate { DrainErrors(startedProcess); }));
             errorThread.IsBackground = true;
             errorThread.Name = "Codex app-server errors";
             errorThread.Start();
@@ -1555,9 +1727,9 @@ namespace CodexRateMonitorNative
         // periodic refresh uses lightweight account/rateLimits/read requests on
         // the long-lived server (see MonitorContext). Kept only as an occasional
         // resync when the read channel looks pinned.
-        public void RefreshRateLimits()
+        public void RefreshRateLimits(bool force = false)
         {
-            if (!IsInitialized)
+            if (!force && !IsInitialized)
                 return;
 
             // account/rateLimits/read can remain pinned to the snapshot captured when
@@ -1568,36 +1740,38 @@ namespace CodexRateMonitorNative
             Start();
         }
 
-        private void ReadOutput()
+        private void ReadOutput(Process current, int startedGeneration)
         {
             try
             {
                 string line;
-                while (!disposed && process != null &&
-                       (line = process.StandardOutput.ReadLine()) != null)
+                while (!disposed &&
+                       (line = current.StandardOutput.ReadLine()) != null)
                 {
-                    ProcessMessage(line);
+                    if (startedGeneration != Generation)
+                        break;
+                    ProcessMessage(line, startedGeneration);
                 }
             }
             catch (Exception ex)
             {
                 DiagnosticLog.Write("app-server-read-failed", "type=" + ex.GetType().Name);
-                RaiseStatus(I18n.F("CommunicationError", ex.Message));
+                RaiseStatus(I18n.F("CommunicationError", ex.Message), startedGeneration);
             }
             finally
             {
-                IsInitialized = false;
+                if (startedGeneration == Generation)
+                    IsInitialized = false;
                 DiagnosticLog.Write("app-server-output-ended", null);
             }
         }
 
-        private void DrainErrors()
+        private void DrainErrors(Process current)
         {
             try
             {
                 bool reported = false;
-                while (!disposed && process != null &&
-                       process.StandardError.ReadLine() != null)
+                while (!disposed && current.StandardError.ReadLine() != null)
                 {
                     if (!reported)
                     {
@@ -1611,8 +1785,10 @@ namespace CodexRateMonitorNative
             }
         }
 
-        private void ProcessMessage(string line)
+        private void ProcessMessage(string line, int startedGeneration)
         {
+            if (startedGeneration != Generation)
+                return;
             Dictionary<string, object> message;
             try
             {
@@ -1632,7 +1808,7 @@ namespace CodexRateMonitorNative
                 if (message.ContainsKey("error"))
                 {
                     DiagnosticLog.Write("app-server-initialize-error", null);
-                    RaiseStatus(I18n.T("InitializationFailed"));
+                    RaiseStatus(I18n.T("InitializationFailed"), startedGeneration);
                     return;
                 }
                 var initialized = new Dictionary<string, object>();
@@ -1669,18 +1845,23 @@ namespace CodexRateMonitorNative
                         "rate-response-error",
                         "id=" + id.ToString(CultureInfo.InvariantCulture) +
                         " error=" + detail);
-                    RaiseStatus(GetRateLimitErrorStatus(message));
+                    if (IsAuthRevokedError(error))
+                        RaiseAuthRevoked(startedGeneration, LatestRequestId);
+                    else
+                        RaiseStatus(GetRateLimitErrorStatus(message), startedGeneration);
                     return;
                 }
                 var result = GetDictionary(message, "result");
                 RateSnapshot snapshot = ParseReadResult(result);
+                if (snapshot != null)
+                    snapshot.ReadRequestId = id;
                 DiagnosticLog.Write(
                     "rate-response",
                     "id=" + id.ToString(CultureInfo.InvariantCulture) +
                     " raw=" + DescribeRateLimitsContainer(result) +
                     " parsed=" + DescribeSnapshot(snapshot));
                 if (snapshot != null)
-                    RaiseSnapshot(snapshot);
+                    RaiseSnapshot(snapshot, startedGeneration);
                 return;
             }
 
@@ -1693,10 +1874,11 @@ namespace CodexRateMonitorNative
                     "rate-notification",
                     "raw=" + DescribeRateLimitsContainer(parameters) +
                     " parsed=" + DescribeSnapshot(snapshot));
-                if (UpdateNotificationReceived != null)
-                    UpdateNotificationReceived();
+                Action<int> notificationHandler = UpdateNotificationReceived;
+                if (notificationHandler != null)
+                    notificationHandler(startedGeneration);
                 if (snapshot != null)
-                    RaiseSnapshot(snapshot);
+                    RaiseSnapshot(snapshot, startedGeneration);
             }
         }
 
@@ -1856,6 +2038,22 @@ namespace CodexRateMonitorNative
             return I18n.T("NotSignedIn");
         }
 
+        private static bool IsAuthRevokedError(Dictionary<string, object> error)
+        {
+            if (error == null)
+                return false;
+            string code = GetString(error, "code");
+            if (string.Equals(code, "token_revoked", StringComparison.OrdinalIgnoreCase))
+                return true;
+            var data = GetDictionary(error, "data");
+            code = GetString(data, "code");
+            if (string.Equals(code, "token_revoked", StringComparison.OrdinalIgnoreCase))
+                return true;
+            string detail = GetString(error, "message");
+            return detail != null &&
+                detail.IndexOf("token_revoked", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
         private static RateSnapshot ParseSnapshot(Dictionary<string, object> source)
         {
             if (source == null)
@@ -1921,18 +2119,25 @@ namespace CodexRateMonitorNative
             }
         }
 
-        private void RaiseSnapshot(RateSnapshot snapshot)
+        private void RaiseSnapshot(RateSnapshot snapshot, int startedGeneration)
         {
-            Action<RateSnapshot> handler = SnapshotReceived;
+            Action<RateSnapshot, int> handler = SnapshotReceived;
             if (handler != null)
-                handler(snapshot);
+                handler(snapshot, startedGeneration);
         }
 
-        private void RaiseStatus(string status)
+        private void RaiseStatus(string status, int startedGeneration)
         {
-            Action<string> handler = StatusChanged;
+            Action<string, int> handler = StatusChanged;
             if (handler != null)
-                handler(status);
+                handler(status, startedGeneration);
+        }
+
+        private void RaiseAuthRevoked(int startedGeneration, int latestRequestId)
+        {
+            Action<int, int> handler = AuthRevoked;
+            if (handler != null)
+                handler(startedGeneration, latestRequestId);
         }
 
         private static Dictionary<string, object> GetDictionary(
@@ -2035,6 +2240,8 @@ namespace CodexRateMonitorNative
         private void DisposeProcess()
         {
             IsInitialized = false;
+            lock (requestLock)
+                rateLimitRequests.Clear();
 
             Process current = process;
             process = null;
@@ -2744,6 +2951,7 @@ namespace CodexRateMonitorNative
         public WindowUsage Secondary { get; set; }
         public string PlanType { get; set; }
         public bool ReplaceMissingWindows { get; set; }
+        public int ReadRequestId { get; set; }
     }
 
     internal sealed class WindowUsage

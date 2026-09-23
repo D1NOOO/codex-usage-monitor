@@ -85,7 +85,7 @@ if ($parseErrors.Count -gt 0) {
 Get-ChildItem -LiteralPath $repoRoot -Recurse -Filter '*.json' |
     Where-Object { $_.FullName -notmatch '\\(artifacts|\.build)\\' } |
     ForEach-Object {
-        Get-Content -Raw -LiteralPath $_.FullName | ConvertFrom-Json | Out-Null
+        Get-Content -Raw -Encoding UTF8 -LiteralPath $_.FullName | ConvertFrom-Json | Out-Null
     }
 
 Write-Host "Verified $($textFiles.Count) text files."

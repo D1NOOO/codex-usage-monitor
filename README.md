@@ -43,9 +43,8 @@ and the reset-credits (read-only) toggle.
 - Reset-credit badge: read-only display of available credits and earliest
   expiry 鈥?never redeems credits.
 - Multi-line tray tooltip with usage and reset-credit summary.
-- Low traffic: long-lived app-server with lightweight reads plus push
-  notifications, and a reduced cadence while the desktop window is minimized
-  (see "Traffic" below).
+- Periodic reads reuse a long-lived app-server; polling slows down while the
+  desktop window is minimized (see "Traffic" below).
 - Also: zh-CN / zh-TW / English UI, full appearance editor, start with
   Windows, background update checks with verified in-place updates.
 
@@ -79,10 +78,16 @@ The tool is designed to be gentle on your data plan (background:
 | Reset-credit query | One read-only request every `ResetCreditsSeconds` (default 30 min) |
 
 The app-server process stays alive and is reused for the whole session;
-periodic refreshes send lightweight `account/rateLimits/read` requests and
-merge `account/rateLimits/updated` push notifications instead of restarting
-the process. The old scheme cold-started the CLI on every refresh, whose
-initialization traffic dwarfed the lightweight reads (see issue #5).
+periodic refreshes send `account/rateLimits/read` requests and merge
+`account/rateLimits/updated` push notifications instead of restarting it on
+every poll. The app-server may also make its own background requests, so total
+process traffic can exceed the traffic from rate-limit reads alone.
+
+If the app-server reports a revoked token, the monitor clears the stale usage
+display immediately. Repeated failures allow one automatic app-server restart;
+if sign-in remains invalid, the monitor stops automatic restarts and checks for
+recovery no more often than every five minutes. After signing in through
+ChatGPT/Codex, use the tray's "Refresh now" command to retry immediately.
 
 ## How it works
 
