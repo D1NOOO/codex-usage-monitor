@@ -4,7 +4,7 @@
 
 # Codex Rate Monitor for Windows
 
-[绠€浣撲腑鏂嘳(README.zh-CN.md) 路 [绻侀珨涓枃](README.zh-TW.md) 路 **English**
+[简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · **English**
 
 A small, native Windows tray utility that shows the current Codex 5-hour and
 7-day usage windows next to ChatGPT desktop's Codex UI, plus available
