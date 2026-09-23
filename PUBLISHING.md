@@ -61,10 +61,13 @@ history before publishing.
 - Test at 100% and 125% Windows display scaling.
 - Review the packaged ZIP and `SHA256SUMS.txt`.
 - Create and push a matching `vMAJOR.MINOR.PATCH` tag.
+- Write `.github/release-notes/vMAJOR.MINOR.PATCH.md` before tagging.
 - Confirm the GitHub Release contains only:
   - the Windows ZIP;
   - `SHA256SUMS.txt`;
-  - generated release notes.
+  - release notes taken from `.github/release-notes/<tag>.md`
+    (the workflow falls back to `--generate-notes` only if the file is
+    missing).
 - Verify the GitHub artifact attestation.
 
 ## Known trust limitation
