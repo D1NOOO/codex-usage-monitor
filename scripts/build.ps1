@@ -24,7 +24,8 @@ if (-not $outputPath.StartsWith($artifactsRoot, [StringComparison]::OrdinalIgnor
     throw "OutputDirectory must stay under '$artifactsRoot'."
 }
 
-$buildRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot '.build'))
+# Keep build intermediates separate from running regression-test executables.
+$buildRoot = [IO.Path]::GetFullPath((Join-Path (Join-Path $repoRoot '.build') (Split-Path $outputPath -Leaf)))
 foreach ($path in @($outputPath, $buildRoot)) {
     if (Test-Path -LiteralPath $path) {
         Remove-Item -LiteralPath $path -Recurse -Force
@@ -44,6 +45,7 @@ if (-not $csc) {
 $assemblyInfo = Join-Path $buildRoot 'GeneratedAssemblyInfo.cs'
 @"
 using System.Reflection;
+[assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8")]
 [assembly: AssemblyTitle("Codex Rate Monitor")]
 [assembly: AssemblyDescription("Display Codex 5-hour and 7-day usage on Windows.")]
 [assembly: AssemblyProduct("Codex Rate Monitor")]
@@ -61,6 +63,10 @@ namespace CodexRateMonitorNative
 $sources = @(
     (Join-Path $repoRoot 'src\CodexRateMonitor.cs'),
     (Join-Path $repoRoot 'src\AppearanceSettingsForm.cs'),
+    (Join-Path $repoRoot 'src\DpiAwareDialog.cs'),
+    (Join-Path $repoRoot 'src\OverlayRenderer.cs'),
+    (Join-Path $repoRoot 'src\UsageRefreshScheduler.cs'),
+    (Join-Path $repoRoot 'src\DiagnosticLog.cs'),
     (Join-Path $repoRoot 'src\Localization.cs'),
     (Join-Path $repoRoot 'src\UpdateChecker.cs'),
     (Join-Path $repoRoot 'src\UpdateForm.cs'),
@@ -74,6 +80,7 @@ $exe = Join-Path $outputPath 'CodexRateMonitor.exe'
     /optimize+ `
     /platform:anycpu `
     /win32icon:"$(Join-Path $repoRoot 'assets\app.ico')" `
+    /win32manifest:"$(Join-Path $repoRoot 'src\app.manifest')" `
     /out:"$exe" `
     /reference:System.dll `
     /reference:System.Core.dll `
@@ -87,6 +94,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "C# compilation failed with exit code $LASTEXITCODE."
 }
 
+Copy-Item -LiteralPath (Join-Path $repoRoot 'src\app.config') -Destination ($exe + '.config')
 Copy-Item -LiteralPath (Join-Path $repoRoot 'config\settings.default.json') -Destination (Join-Path $outputPath 'settings.json')
 Copy-Item -LiteralPath (Join-Path $repoRoot 'style-examples') -Destination (Join-Path $outputPath 'style-examples') -Recurse
 New-Item -ItemType Directory -Path (Join-Path $outputPath 'assets') -Force | Out-Null
@@ -96,6 +104,9 @@ foreach ($readme in @('README.md', 'README.zh-CN.md', 'README.zh-TW.md')) {
 }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'LICENSE') -Destination (Join-Path $outputPath 'LICENSE')
 Copy-Item -LiteralPath (Join-Path $repoRoot 'SECURITY.md') -Destination (Join-Path $outputPath 'SECURITY.md')
+New-Item -ItemType Directory -Path (Join-Path $outputPath 'docs') -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\usage-refresh.md') -Destination (Join-Path $outputPath 'docs\usage-refresh.md')
+Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\issue-6-dpi-regression.md') -Destination (Join-Path $outputPath 'docs\issue-6-dpi-regression.md')
 
 $hash = Get-FileHash -LiteralPath $exe -Algorithm SHA256
 "$($hash.Hash.ToLowerInvariant())  CodexRateMonitor.exe" |

@@ -45,6 +45,13 @@ jobs:
           ./scripts/verify.ps1
           ./scripts/build.ps1 -Version '${{ steps.version.outputs.version }}' -Package
 
+      - name: Verify release regressions
+        shell: pwsh
+        run: |
+          ./scripts/test-usage-refresh.ps1
+          ./scripts/test-auth-recovery-regression.ps1
+          ./scripts/test-scale-migration.ps1
+
       - name: Attest release archive
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
         with:

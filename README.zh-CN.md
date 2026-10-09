@@ -34,7 +34,9 @@
 
 
 
-外观设置提供实时预览：位置、字体、颜色、透明度，以及「显示重置券（只读查询）」开关。
+外观设置提供样式预览：位置、字体、颜色、透明度，以及「显示重置券（只读查询）」开关。预览中的用量、时间和重置券数量为演示数据。
+悬浮框会实时跟随 Windows 显示缩放，「整体缩放」在此基础上叠加。预览空间足够时按实际尺寸显示，空间不足时会标明缩小比例。
+整体缩放默认新的 100%（对应原来 85% 的尺寸），可在「外观设置 → 排版与尺寸 → 整体缩放」调整为 50%–200%。字体、间距与圆角一起缩放，旧配置更新后保持实际大小。
 
 ![外观设置](docs/appearance-settings-reset-credits-zh-cn.png)
 
@@ -70,12 +72,18 @@ EXE 未做商业签名，SmartScreen 可能提示未知发布者；请只从 Rel
 
 | 场景 | 行为 |
 |---|---|
-| ChatGPT/Codex 窗口可见 | 每 `RefreshSeconds`（默认 60s）一次轻量读取 |
+| ChatGPT/Codex 位于前台 | 每 `ForegroundRefreshSeconds`（默认 30s）一次轻量读取 |
+| 窗口可见但位于后台 | 每 `RefreshSeconds`（默认 60s）一次读取 |
 | 窗口最小化 / 仅托盘 | 降频到 `MinimizedRefreshSeconds`（默认 300s） |
 | 重置券查询 | 每 `ResetCreditsSeconds`（默认 30 分钟）一次只读请求 |
 
-app-server 进程全程常驻复用：周期刷新发送 `account/rateLimits/read` 请求并合并
-`account/rateLimits/updated` 推送，不再每次轮询都重启进程。app-server 也可能自行发出
+app-server 进程全程常驻复用：先以 `account/read`（`refreshToken: false`）确认本地账号，
+再发送 `account/rateLimits/read`，并接收监视器自身连接的 `account/rateLimits/updated`
+通知。切回前台、恢复窗口、系统唤醒后等待 1 秒合并补刷；同时触发的刷新复用一个
+请求，30 秒超时，失败后逐步退避到最多 5 分钟。额度连续相同不会触发重启。
+悬浮条与托盘提示显示上次确认更新的时间，账号变化时清除旧数据。
+这能减少轮询等待，但无法保证与官方界面独立缓存的数据逐秒一致。详见
+[刷新机制与回归用例](docs/usage-refresh.md)。app-server 也可能自行发出
 后台请求，因此进程总流量可能高于用量读取本身。
 
 如果 app-server 报告令牌失效，悬浮条会立即清除旧用量。连续失败时最多自动重启
@@ -102,6 +110,11 @@ flowchart LR
 绝不核销、不存储、不外传。诊断日志写入 `%LOCALAPPDATA%\CodexRateMonitor\logs`
 并自动清理，不含令牌与账户信息。安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。
 
+诊断默认关闭。排查时将 `settings.json` 中的 `DiagnosticsEnabled` 改为 `true`，
+重启监视器后生效。日志默认保留 7 天，单文件约 2 MiB 时轮转，总容量预算 20 MiB；
+关闭诊断后，只要监视器仍在运行，也会清理过期日志。刷新原因、请求耗时、通知处理
+以及重置时间补刷规则见 [用量刷新与诊断说明](docs/usage-refresh.md)。
+
 ## 配置
 
 `settings.json`（来自 `config/settings.default.json`）常用字段：
@@ -111,13 +124,19 @@ flowchart LR
 | `Language`                                       | `auto` / `zh-CN` / `zh-TW` / `en`  |
 | `OverlayMode`                                    | `desktop`（默认，桌面悬浮）/ `attach`（吸附窗口） |
 | `UsageDisplay`                                   | `remaining`（默认）/ `used`            |
-| `RefreshSeconds`                                 | 30–900，窗口可见时的刷新间隔（默认 60）           |
+| `ForegroundRefreshSeconds`                       | 30–`RefreshSeconds`，前台刷新间隔（默认 30）     |
+| `RefreshSeconds`                                 | 30–900，窗口可见但位于后台时的刷新间隔（默认 60） |
 | `MinimizedRefreshSeconds`                        | 60–3600，最小化时的刷新间隔（默认 300）          |
 | `ShowResetCredits`                               | 重置券卡片开关（默认开）                       |
 | `ResetCreditsSeconds`                            | 300–86400，重置券查询间隔（默认 1800）         |
-| `DiagnosticsEnabled` / `DiagnosticRetentionDays` | 诊断日志开关与保留天数                        |
+| `DiagnosticsEnabled` / `DiagnosticRetentionDays` | 诊断默认关闭，默认保留 7 天（1–30），总容量预算 20 MiB |
 
 其余外观字段（字体、颜色 `#RRGGBB`、缩放、透明度等）见默认模板或外观设置界面。
+
+整体缩放范围为 50%–200%，新的 100% 使用原来 85% 的紧凑尺寸。旧配置在内存中换算，
+保持实际大小不变：旧 85% 对应新 100%，旧 100% 对应新约 117.65%。更新器保留已有
+`settings.json`，保存设置时写入 `Style.ScaleBasisVersion: 2`，避免重复换算；
+字体、颜色、透明度、位置及其他配置继续保留。
 
 ## 构建与发布
 

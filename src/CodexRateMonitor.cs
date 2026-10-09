@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -7,6 +7,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
@@ -29,7 +30,6 @@ namespace CodexRateMonitorNative
                 if (!created)
                     return;
 
-                NativeMethods.SetProcessDPIAware();
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 bool showSettings = args != null &&
@@ -55,6 +55,7 @@ namespace CodexRateMonitorNative
         private readonly System.Windows.Forms.Timer topmostTimer;
         private readonly AppServerClient appServer;
         private readonly RateSnapshotStabilizer snapshotStabilizer;
+        private readonly UsageRefreshScheduler refreshScheduler = new UsageRefreshScheduler();
         private readonly UpdateChecker updateChecker;
         private ToolStripMenuItem startupItem;
         private ToolStripMenuItem updateItem;
@@ -66,25 +67,34 @@ namespace CodexRateMonitorNative
         private UpdateForm updateForm;
         private UpdateInfo availableUpdate;
         private Icon updateAvailableIcon;
-        private DateTime lastRequest = DateTime.MinValue;
         private RateSnapshot lastSnapshot;
         private ResetCreditsInfo resetCredits;
         private DateTime lastCreditsCheck = DateTime.MinValue;
         private bool creditsFetchInFlight;
         private System.Windows.Forms.Timer trayTextRestoreTimer;
+        private DateTime lastSnapshotAt = DateTime.MinValue;
+        private double lastSnapshotMonotonic;
+        private double nextUsageHintAt;
+        private DesktopUsageState lastUsageState;
+        private bool refreshFailed;
+        private int completedReadId;
+        private int accountEpoch;
+        private string accountFingerprint;
+        private IntPtr desktopWindow;
+        private double nextWindowCheck;
+        private double nextStartAttempt;
+        private double authProbeNotBefore;
 
-        // Long-lived app-server stale detection. Periodic refresh now uses
-        // lightweight rateLimits/read calls; a full child restart happens only
-        // when reads look pinned (identical for many polls) or a snapshot is
-        // rejected, with a cooldown so restarts can never get chatty again.
+        private static double NowSeconds
+        {
+            get { return Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency; }
+        }
+
+        // Unchanged quotas are normal during idle periods. Counts are diagnostic;
+        // only authentication recovery may restart the long-lived child.
         private int identicalReads;
         private bool updateNotificationSeen;
         private DateTime lastResyncAt = DateTime.MinValue;
-        private const int StaleReadsBeforeResync = 10;
-        // Six-hour cooldown: idle periods naturally produce identical reads
-        // (nothing changed server-side), so a short cooldown would burn ~2 MB
-        // per pointless restart. Real staleness waits at most 6 hours.
-        private const int ResyncCooldownMinutes = 360;
         private const int AnomalyResyncCooldownSeconds = 120;
         private const int AuthFailuresBeforeResync = 3;
         private const int AuthProbeSeconds = 300;
@@ -114,6 +124,11 @@ namespace CodexRateMonitorNative
             appServer.StatusChanged += OnStatusChanged;
             appServer.UpdateNotificationReceived += OnUpdateNotification;
             appServer.AuthRevoked += OnAuthRevoked;
+            appServer.Initialized += OnInitialized;
+            appServer.ReadCompleted += OnReadCompleted;
+            appServer.AccountObserved += OnAccountObserved;
+            appServer.AccountUpdated += OnAccountUpdated;
+            SystemEvents.PowerModeChanged += OnPowerModeChanged;
 
             updateChecker = new UpdateChecker(BuildVersion.Value);
             updateChecker.CheckCompleted += OnUpdateCheckCompleted;
@@ -159,7 +174,7 @@ namespace CodexRateMonitorNative
             ThreadPool.QueueUserWorkItem(delegate
             {
                 Thread.Sleep(3000);
-                FetchResetCredits();
+                Ui(FetchResetCredits);
             });
 
             if (showSettings)
@@ -207,6 +222,8 @@ namespace CodexRateMonitorNative
 
         private void OnTimerTick(object sender, EventArgs e)
         {
+            if (appearanceForm != null && !appearanceForm.IsDisposed)
+                appearanceForm.SetPreviewDpi(overlay.OverlayDpi);
             DiagnosticLog.CleanupIfDue();
             if (authResyncAttempted && !authDead &&
                 (DateTime.Now - authAttemptAt).TotalSeconds >= AuthRecoveryTimeoutSeconds)
@@ -215,52 +232,66 @@ namespace CodexRateMonitorNative
                 MarkAuthDead();
             }
 
-            // Visible = normal refresh cadence. Minimized/tray = the app-server
-            // stays alive but polls at the reduced MinimizedRefreshSeconds
-            // cadence, keeping data roughly fresh for ~zero traffic.
-            bool desktopVisible;
+            double now = NowSeconds;
+            // Process discovery is cached; each tick only checks native window state.
+            if (now >= nextWindowCheck)
+            {
+                desktopWindow = WindowLocator.FindDesktopMainWindow();
+                nextWindowCheck = now + 1;
+            }
+            DesktopUsageState state = WindowLocator.GetUsageState(desktopWindow);
+            lastUsageState = state;
+            refreshScheduler.ObserveWindow(state, now);
+            int expiredId, expiredGeneration;
+            string expiredReason = refreshScheduler.PendingReason;
+            double expiredAge = refreshScheduler.PendingAge(now);
+            if (refreshScheduler.ExpireRead(now, out expiredId, out expiredGeneration))
+            {
+                appServer.CancelRateLimitsRequest(expiredId);
+                refreshFailed = true;
+                if (authDead) authProbeNotBefore = now + AuthProbeSeconds;
+                DiagnosticLog.Write("rate-request-timeout", "id=" + expiredId +
+                    " generation=" + expiredGeneration + " reason=" + expiredReason +
+                    " elapsed_ms=" + (expiredAge * 1000).ToString("0", CultureInfo.InvariantCulture) +
+                    " failures=" + refreshScheduler.FailureCount +
+                    " retry_in_s=" + refreshScheduler.RetryDelay(now).ToString("0", CultureInfo.InvariantCulture));
+                UpdateTrayText();
+            }
             if (settings.OverlayMode == "desktop")
             {
-                // Desktop mode floats independently of the ChatGPT/Codex window:
-                // it never hides when switching apps, but still polls usage as
-                // long as the desktop app runs (visible or minimized).
                 overlay.EnsureDesktopVisible();
-                // Topmost re-assertion is handled by the dedicated 50ms
-                // topmostTimer, not here, for tighter recovery latency.
-                desktopVisible = WindowLocator.FindDesktopMainWindow() != IntPtr.Zero;
-                if (!appServer.IsRunning && !authDead &&
-                    (desktopVisible || WindowLocator.IsDesktopAppRunning()))
-                    AutoStartAppServer();
             }
             else
             {
-                IntPtr desktopWindow = WindowLocator.FindForegroundDesktopMainWindow();
-                desktopVisible = desktopWindow != IntPtr.Zero &&
-                                           !NativeMethods.IsIconic(desktopWindow);
-
-                if (desktopVisible)
-                {
+                if (state == DesktopUsageState.Foreground)
                     overlay.AttachTo(desktopWindow);
-                    if (!appServer.IsRunning && !authDead && WindowLocator.IsDesktopAppRunning())
-                        AutoStartAppServer();
-                }
                 else
-                {
                     overlay.Hide();
-                }
+            }
+
+            if (!appServer.IsRunning && !authDead && now >= nextStartAttempt)
+            {
+                nextStartAttempt = now + 30;
+                if (desktopWindow != IntPtr.Zero || WindowLocator.IsDesktopAppRunning())
+                    AutoStartAppServer();
             }
 
             if (appServer.IsInitialized)
             {
-                int refreshSeconds = desktopVisible
-                    ? settings.RefreshSeconds
-                    : Math.Max(
-                        settings.RefreshSeconds,
-                        settings.MinimizedRefreshSeconds);
+                int refreshSeconds = UsageRefreshScheduler.Interval(state,
+                    settings.ForegroundRefreshSeconds, settings.RefreshSeconds,
+                    Math.Max(settings.RefreshSeconds, settings.MinimizedRefreshSeconds));
                 if (authDead)
                     refreshSeconds = Math.Max(refreshSeconds, AuthProbeSeconds);
-                if ((DateTime.Now - lastRequest).TotalSeconds >= refreshSeconds)
+                if ((!authDead || now >= authProbeNotBefore) &&
+                    refreshScheduler.ShouldRead(now, refreshSeconds))
                     RequestRateLimits();
+            }
+
+            if (lastSnapshot != null && now >= nextUsageHintAt)
+            {
+                nextUsageHintAt = now + 30;
+                UpdateTrayText();
             }
 
             if (settings.ShowResetCredits &&
@@ -276,9 +307,9 @@ namespace CodexRateMonitorNative
             overlay.SetStatus(I18n.T("Connecting"));
             try
             {
+                refreshScheduler.Reset(NowSeconds, 0);
                 appServer.Start();
-                lastRequest = DateTime.Now;
-                // Fresh child: stale-detection state starts over.
+                // Fresh child: diagnostic counts start over.
                 identicalReads = 0;
                 updateNotificationSeen = false;
             }
@@ -315,7 +346,7 @@ namespace CodexRateMonitorNative
         {
             if (authFailures == 0 && !authDead)
             {
-                RequestRateLimits();
+                RequestRateLimits(true);
                 return;
             }
 
@@ -332,6 +363,7 @@ namespace CodexRateMonitorNative
             DiagnosticLog.Write("auth-manual-restart", null);
             try
             {
+                refreshScheduler.Reset(NowSeconds, 0);
                 if (appServer.IsRunning)
                     appServer.RefreshRateLimits(true);
                 else
@@ -346,7 +378,7 @@ namespace CodexRateMonitorNative
             }
         }
 
-        private void RequestRateLimits()
+        private void RequestRateLimits(bool manual = false)
         {
             if (!appServer.IsRunning)
             {
@@ -355,16 +387,129 @@ namespace CodexRateMonitorNative
                 return;
             }
 
-            if (!appServer.IsInitialized)
+            if (!appServer.IsInitialized || refreshScheduler.InFlight)
                 return;
 
-            lastRequest = DateTime.Now;
-            // Lightweight refresh: reuse the long-lived app-server and just ask
-            // it for fresh limits. Combined with the account/rateLimits/updated
-            // push this keeps data current without the heavy child restarts
-            // (each restart re-runs CLI initialization and pulled megabytes of
-            // init traffic every poll -- see issue #5).
-            appServer.RequestRateLimits();
+            double now = NowSeconds;
+            appServer.RequestRateLimits(delegate(int id)
+            {
+                if (refreshScheduler.BeginRead(id, appServer.Generation, now, manual))
+                    DiagnosticLog.Write("rate-refresh-started", "id=" + id +
+                        " generation=" + appServer.Generation +
+                        " reason=" + refreshScheduler.PendingReason +
+                        " window=" + lastUsageState.ToString().ToLowerInvariant());
+            });
+        }
+
+        private void OnInitialized(int generation)
+        {
+            Ui(delegate
+            {
+                if (generation != appServer.Generation) return;
+                refreshScheduler.Reset(NowSeconds, 0, "startup");
+                RequestRateLimits();
+            });
+        }
+
+        private void OnReadCompleted(int id, int generation, bool success)
+        {
+            Ui(delegate
+            {
+                double now = NowSeconds;
+                if (generation != appServer.Generation || !refreshScheduler.InFlight ||
+                    refreshScheduler.PendingRequestId != id || refreshScheduler.PendingGeneration != generation)
+                {
+                    DiagnosticLog.Write("rate-completion-ignored", "id=" + id +
+                        " generation=" + generation + " reason=obsolete-read");
+                    return;
+                }
+                string reason = refreshScheduler.PendingReason;
+                double age = refreshScheduler.PendingAge(now);
+                if (!refreshScheduler.CompleteRead(id, generation, now, success)) return;
+                DiagnosticLog.Write("rate-refresh-completed", "id=" + id +
+                    " generation=" + generation + " reason=" + reason +
+                    " state=" + (success ? "success" : "failure") +
+                    " elapsed_ms=" + (age * 1000).ToString("0", CultureInfo.InvariantCulture) +
+                    " failures=" + refreshScheduler.FailureCount +
+                    " retry_in_s=" + refreshScheduler.RetryDelay(now).ToString("0", CultureInfo.InvariantCulture));
+                refreshFailed = !success;
+                completedReadId = success ? id : 0;
+                if (authDead && !success)
+                {
+                    authProbeNotBefore = NowSeconds + AuthProbeSeconds;
+                    refreshScheduler.Trigger(NowSeconds, AuthProbeSeconds, "auth_probe");
+                }
+                UpdateTrayText();
+            });
+        }
+
+        private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+        {
+            if (e.Mode != PowerModes.Resume) return;
+            Ui(delegate
+            {
+                nextWindowCheck = 0;
+                refreshScheduler.Trigger(NowSeconds, 1, "resume");
+                DiagnosticLog.Write("rate-refresh-trigger", "reason=resume");
+            });
+        }
+
+        private void ClearAccountData(string status)
+        {
+            accountEpoch++;
+            lastSnapshot = null;
+            lastSnapshotAt = DateTime.MinValue;
+            lastSnapshotMonotonic = 0;
+            refreshScheduler.ClearResetTargets();
+            resetCredits = null;
+            lastCreditsCheck = DateTime.MinValue;
+            identicalReads = 0;
+            completedReadId = 0;
+            snapshotStabilizer.Reset();
+            overlay.ClearSnapshot(status);
+            overlay.SetResetCredits(null);
+            overlay.SetUsageHint(status);
+            trayIcon.Text = SafeTrayText(I18n.F("TrayStatus", status));
+        }
+
+        private void OnAccountUpdated(int generation)
+        {
+            Ui(delegate
+            {
+                if (generation != appServer.Generation) return;
+                accountFingerprint = null;
+                ClearAccountData(I18n.T("Connecting"));
+                authReadFloor = appServer.LatestRequestId;
+                authDead = false;
+                authFailures = 0;
+                authResyncAttempted = false;
+                refreshScheduler.Reset(NowSeconds, 1);
+                DiagnosticLog.Write("account-changed", "source=notification");
+            });
+        }
+
+        private void OnAccountObserved(AccountState account, int generation)
+        {
+            Ui(delegate
+            {
+                if (generation != appServer.Generation) return;
+                if (account.ReadRequestId > 0 && (!refreshScheduler.InFlight ||
+                    refreshScheduler.PendingRequestId != account.ReadRequestId ||
+                    refreshScheduler.PendingGeneration != generation)) return;
+                if (accountFingerprint != account.Fingerprint)
+                {
+                    ClearAccountData(I18n.T("Connecting"));
+                    accountFingerprint = account.Fingerprint;
+                    DiagnosticLog.Write("account-changed", "source=read");
+                }
+                if (!account.CanReadQuota)
+                {
+                    authDead = true;
+                    authProbeNotBefore = NowSeconds + AuthProbeSeconds;
+                    ClearAccountData(I18n.T(account.StatusKey));
+                    refreshScheduler.Trigger(NowSeconds, AuthProbeSeconds, "auth_probe");
+                }
+            });
         }
 
         private void OnUpdateNotification(int generation)
@@ -378,9 +523,7 @@ namespace CodexRateMonitorNative
             });
         }
 
-        // Detects a pinned read channel: when many consecutive reads return
-        // byte-identical window data and no push notification has arrived, do a
-        // single child restart (rate limited by a cooldown) to resync.
+        // Equal readings do not prove a stale connection.
         private void TrackSnapshotFreshness(RateSnapshot snapshot)
         {
             if (lastSnapshot == null || snapshot == null)
@@ -400,26 +543,6 @@ namespace CodexRateMonitorNative
                 identicalReads = 0;
                 return;
             }
-            if (identicalReads >= StaleReadsBeforeResync &&
-                (DateTime.Now - lastResyncAt).TotalMinutes >= ResyncCooldownMinutes &&
-                appServer.IsRunning)
-            {
-                DiagnosticLog.Write(
-                    "resync-restart",
-                    "reason=pinned-reads identical=" + identicalReads);
-                identicalReads = 0;
-                lastResyncAt = DateTime.Now;
-                try
-                {
-                    appServer.RefreshRateLimits();
-                }
-                catch (Exception ex)
-                {
-                    DiagnosticLog.Write(
-                        "resync-restart-failed",
-                        "type=" + ex.GetType().Name);
-                }
-            }
         }
 
         private static bool SameWindow(WindowUsage a, WindowUsage b)
@@ -437,11 +560,21 @@ namespace CodexRateMonitorNative
             Ui(delegate
             {
                 if (generation != appServer.Generation)
+                {
+                    LogNotificationDisposition(snapshot, generation, "ignored", "obsolete-generation");
                     return;
+                }
+                if (snapshot.ReadRequestId > 0 && snapshot.ReadRequestId != completedReadId)
+                {
+                    DiagnosticLog.Write("snapshot-ignored", "id=" + snapshot.ReadRequestId +
+                        " generation=" + generation + " reason=obsolete-read");
+                    return;
+                }
                 if ((authFailures > 0 || authResyncAttempted || authDead) &&
                     (!snapshot.ReplaceMissingWindows || snapshot.ReadRequestId <= authReadFloor))
                 {
                     DiagnosticLog.Write("auth-snapshot-ignored", "reason=predates-failure");
+                    LogNotificationDisposition(snapshot, generation, "ignored", "auth-unverified");
                     return;
                 }
                 string validation;
@@ -451,31 +584,8 @@ namespace CodexRateMonitorNative
                     DiagnosticLog.Write(
                         "snapshot-deferred",
                         validation + " " + AppServerClient.DescribeSnapshot(snapshot));
-                    lastRequest = DateTime.Now;
-                    try
-                    {
-                        // A rejected snapshot means the data stream looked
-                        // inconsistent. Prefer a cheap re-read; only allow a
-                        // full child restart after a cooldown so this can never
-                        // turn into a restart storm.
-                        if (authFailures == 0 && !authResyncAttempted &&
-                            (DateTime.Now - lastResyncAt).TotalSeconds >=
-                            AnomalyResyncCooldownSeconds)
-                        {
-                            lastResyncAt = DateTime.Now;
-                            appServer.RefreshRateLimits();
-                        }
-                        else
-                        {
-                            appServer.RequestRateLimits();
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        DiagnosticLog.Write(
-                            "snapshot-retry-failed",
-                            "type=" + ex.GetType().Name);
-                    }
+                    LogNotificationDisposition(snapshot, generation, "deferred", "snapshot-validation");
+                    refreshScheduler.Trigger(NowSeconds, 1, "validation");
                     return;
                 }
 
@@ -496,21 +606,43 @@ namespace CodexRateMonitorNative
                 overlay.SetSnapshot(snapshot);
                 DiagnosticLog.Write(
                     "snapshot-displayed",
-                    "mode=" + settings.UsageDisplay +
+                    "source=" + (snapshot.NotificationId > 0 ? "notification" : "read") +
+                    " id=" + (snapshot.NotificationId > 0 ? snapshot.NotificationId : snapshot.ReadRequestId) +
+                    " generation=" + generation + " mode=" + settings.UsageDisplay +
                     " " + AppServerClient.DescribeSnapshot(snapshot));
+                LogNotificationDisposition(snapshot, generation, "displayed", "validated");
                 TrackSnapshotFreshness(snapshot);
                 lastSnapshot = snapshot;
+                lastSnapshotAt = DateTime.Now;
+                lastSnapshotMonotonic = NowSeconds;
+                refreshScheduler.ObserveResets(snapshot.Primary == null ? null : snapshot.Primary.ResetsAt,
+                    snapshot.Secondary == null ? null : snapshot.Secondary.ResetsAt,
+                    DateTimeOffset.UtcNow, lastSnapshotMonotonic,
+                    snapshot.Primary == null ? (double?)null : snapshot.Primary.UsedPercent,
+                    snapshot.Secondary == null ? (double?)null : snapshot.Secondary.UsedPercent);
+                refreshFailed = false;
                 UpdateTrayText();
             });
         }
 
-        // Tray tooltip in a stacked four-line layout:
-        //   Codex 剩余：
-        //   5小时 xx% · 7天 xx%
-        //   重置券：
-        //   剩余 N 张，最早 MM-dd 过期
-        // The reset block is omitted while no credit data is available. Total
-        // length stays within the shell's 63-character NotifyIcon cap.
+        private static void LogNotificationDisposition(RateSnapshot snapshot, int generation, string state, string reason)
+        {
+            if (snapshot.NotificationId <= 0) return;
+            DiagnosticLog.Write("rate-notification-" + state, "id=" + snapshot.NotificationId +
+                " generation=" + generation + " reason=" + reason);
+        }
+
+        private static string FormatCacheAge(double seconds)
+        {
+            seconds = Math.Max(0, seconds);
+            string key = seconds < 60 ? "AgeSeconds" : seconds < 3600 ? "AgeMinutes" :
+                seconds < 86400 ? "AgeHours" : "AgeDays";
+            double divisor = seconds < 60 ? 1 : seconds < 3600 ? 60 : seconds < 86400 ? 3600 : 86400;
+            return I18n.F(key, Math.Min(9999, Math.Floor(seconds / divisor)).ToString(CultureInfo.InvariantCulture));
+        }
+
+        // Keep update time within the tray's 63-character limit. The overlay
+        // tooltip can additionally show full credit details and failure state.
         private void UpdateTrayText()
         {
             if (authFailures > 0 || authResyncAttempted || authDead)
@@ -537,15 +669,37 @@ namespace CodexRateMonitorNative
                     : UsageDisplayTools.FormatPercent(
                         UsageDisplayTools.GetDisplayedPercent(
                             lastSnapshot.Secondary.UsedPercent, settings.UsageDisplay)));
+            string updated = I18n.F("UpdatedAt", lastSnapshotAt.ToString("HH:mm:ss"));
+            double cacheAge = Math.Max(0, NowSeconds - lastSnapshotMonotonic);
+            int interval = UsageRefreshScheduler.Interval(lastUsageState,
+                settings.ForegroundRefreshSeconds, settings.RefreshSeconds, settings.MinimizedRefreshSeconds);
+            bool stale = cacheAge > Math.Max(120, interval * 2 + 30);
+            string hint = text + "\n" + updated;
+            if (refreshFailed) hint += "\n" + I18n.T("RefreshFailedCached");
+            else if (stale) hint += "\n" + I18n.T("CachedDataStale");
+            if (refreshFailed || stale) hint += "\n" + I18n.F("LastConfirmedAgo", FormatCacheAge(cacheAge));
             if (resetCredits != null && resetCredits.AvailableCount > 0)
             {
-                text += "\n" + I18n.T("TrayCreditsTitle");
-                text += "\n" + string.Format(CultureInfo.InvariantCulture,
+                hint += "\n" + I18n.T("TrayCreditsTitle");
+                hint += "\n" + string.Format(CultureInfo.InvariantCulture,
                     I18n.T("TrayCreditsDetail"),
                     resetCredits.AvailableCount.ToString(CultureInfo.InvariantCulture),
                     resetCredits.FormatEarliestExpiry());
             }
-            trayIcon.Text = SafeTrayText(text);
+            overlay.SetUsageHint(hint);
+            // The compact form works in all three languages without truncating
+            // the update time. Failure remains visible even in attach mode.
+            string compact = I18n.F("UsageTray",
+                I18n.T(UsageDisplayTools.IsRemaining(settings.UsageDisplay) ? "Remaining" : "Used"),
+                lastSnapshot.Primary == null ? "--%" : UsageDisplayTools.FormatPercent(
+                    UsageDisplayTools.GetDisplayedPercent(lastSnapshot.Primary.UsedPercent, settings.UsageDisplay)),
+                lastSnapshot.Secondary == null ? "--%" : UsageDisplayTools.FormatPercent(
+                    UsageDisplayTools.GetDisplayedPercent(lastSnapshot.Secondary.UsedPercent, settings.UsageDisplay)));
+            if (refreshFailed || stale)
+                compact += "\n" + lastSnapshotAt.ToString("HH:mm:ss") + " " +
+                    I18n.T(refreshFailed ? "RefreshFailedShort" : "CachedShort") + " " + FormatCacheAge(cacheAge);
+            else compact += "\n" + updated;
+            trayIcon.Text = SafeTrayText(compact);
         }
 
         // Read-only reset-credit refresh. Runs off the UI thread; the result is
@@ -553,9 +707,10 @@ namespace CodexRateMonitorNative
         // stale) because the ChatGPT backend is an auxiliary data source.
         private void FetchResetCredits()
         {
-            if (!settings.ShowResetCredits || creditsFetchInFlight)
+            if (!settings.ShowResetCredits || creditsFetchInFlight || authDead || accountFingerprint == null)
                 return;
             creditsFetchInFlight = true;
+            int startedEpoch = accountEpoch;
             lastCreditsCheck = DateTime.Now;
             ThreadPool.QueueUserWorkItem(delegate
             {
@@ -563,6 +718,8 @@ namespace CodexRateMonitorNative
                 Ui(delegate
                 {
                     creditsFetchInFlight = false;
+                    if (startedEpoch != accountEpoch)
+                        return;
                     resetCredits = info;
                     // On failure retry soon (60s) instead of waiting a full
                     // cycle; the backend is auxiliary so this stays quiet.
@@ -589,10 +746,7 @@ namespace CodexRateMonitorNative
                     authFailures.ToString(CultureInfo.InvariantCulture));
                 if (authFailures == 1)
                 {
-                    lastSnapshot = null;
-                    identicalReads = 0;
-                    overlay.ClearSnapshot(I18n.T("Connecting"));
-                    trayIcon.Text = SafeTrayText(I18n.F("TrayStatus", I18n.T("Connecting")));
+                    ClearAccountData(I18n.T("Connecting"));
                 }
                 if (authResyncAttempted)
                 {
@@ -609,6 +763,7 @@ namespace CodexRateMonitorNative
                 DiagnosticLog.Write("auth-resync-restart", "reason=revoked");
                 try
                 {
+                    refreshScheduler.Reset(NowSeconds, 0);
                     appServer.RefreshRateLimits();
                     if (!appServer.IsRunning)
                         MarkAuthDead();
@@ -626,11 +781,10 @@ namespace CodexRateMonitorNative
             if (authDead)
                 return;
             authDead = true;
-            lastSnapshot = null;
-            lastRequest = DateTime.Now;
+            authProbeNotBefore = NowSeconds + AuthProbeSeconds;
             string status = I18n.T("AuthUnavailable");
-            overlay.ClearSnapshot(status);
-            trayIcon.Text = SafeTrayText(I18n.F("TrayStatus", status));
+            ClearAccountData(status);
+            refreshScheduler.Trigger(NowSeconds, AuthProbeSeconds, "auth_probe");
             DiagnosticLog.Write("auth-dead", null);
         }
 
@@ -642,7 +796,13 @@ namespace CodexRateMonitorNative
                     authResyncAttempted || authDead)
                     return;
                 overlay.SetStatus(status);
-                trayIcon.Text = SafeTrayText(I18n.F("TrayStatus", status));
+                if (lastSnapshot != null)
+                {
+                    refreshFailed = true;
+                    UpdateTrayText();
+                }
+                else
+                    trayIcon.Text = SafeTrayText(I18n.F("TrayStatus", status));
             });
         }
 
@@ -876,6 +1036,7 @@ namespace CodexRateMonitorNative
             I18n.SetLanguage(settings.Language);
             RefreshTrayLanguage();
             overlay.ApplySettings(settings);
+            UpdateTrayText();
             ShowTransientTrayText(I18n.T("StyleReloaded"));
         }
 
@@ -904,6 +1065,7 @@ namespace CodexRateMonitorNative
                     settings.Save();
                     RefreshTrayLanguage();
                     overlay.ApplySettings(settings);
+                    UpdateTrayText();
                     ShowTransientTrayText(I18n.T("AppearanceSaved"));
                 },
                 delegate
@@ -911,6 +1073,7 @@ namespace CodexRateMonitorNative
                     overlay.ApplySettings(original);
                 });
             appearanceForm.FormClosed += delegate { appearanceForm = null; };
+            appearanceForm.SetPreviewDpi(overlay.OverlayDpi);
             appearanceForm.Show();
             appearanceForm.Activate();
         }
@@ -959,6 +1122,7 @@ namespace CodexRateMonitorNative
             if (disposed)
                 return;
             disposed = true;
+            SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             DiagnosticLog.Write("monitor-stop", null);
             timer.Stop();
             timer.Dispose();
@@ -989,6 +1153,7 @@ namespace CodexRateMonitorNative
 
     internal sealed class OverlayForm : Form
     {
+        private readonly ToolTip usageHint = new ToolTip { ShowAlways = true, AutoPopDelay = 10000 };
         private MonitorSettings settings;
         private RateSnapshot snapshot;
         private ResetCreditsInfo resetCredits;
@@ -997,6 +1162,24 @@ namespace CodexRateMonitorNative
         private string overlayMode = "attach";
         private bool dragging;
         private Point dragOffset;
+        private int overlayDpi = 96;
+        private IntPtr attachedWindow;
+        private bool applyingDpi;
+        private bool presentingSurface;
+        private bool creatingSurfaceHandle;
+
+        public int OverlayDpi { get { return overlayDpi; } }
+
+        public void SetUsageHint(string text)
+        {
+            usageHint.SetToolTip(this, text);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) usageHint.Dispose();
+            base.Dispose(disposing);
+        }
 
         // Raised when the user finishes dragging the desktop overlay so the
         // context can persist the new position. The overlay is always topmost
@@ -1006,7 +1189,12 @@ namespace CodexRateMonitorNative
         public OverlayForm(MonitorSettings initialSettings)
         {
             settings = initialSettings;
+            // Custom painting owns scaling; WinForms must not scale it again.
+            AutoScaleMode = AutoScaleMode.None;
             FormBorderStyle = FormBorderStyle.None;
+            // Allow a borderless alpha window below the normal minimum track
+            // height. Keep Form.Opacity at 1; Present owns the alpha channel.
+            AllowTransparency = true;
             ShowInTaskbar = false;
             TopMost = true;
             StartPosition = FormStartPosition.Manual;
@@ -1028,9 +1216,11 @@ namespace CodexRateMonitorNative
             {
                 const int WS_EX_TRANSPARENT = 0x20;
                 const int WS_EX_TOOLWINDOW = 0x80;
+                const int WS_EX_LAYERED = 0x80000;
                 const int WS_EX_NOACTIVATE = 0x08000000;
                 CreateParams cp = base.CreateParams;
-                cp.ExStyle |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+                cp.Style |= unchecked((int)0x80000000); // WS_POPUP: no normal-window minimum track size.
+                cp.ExStyle |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED;
                 // Attach mode is click-through so it never steals focus from the
                 // ChatGPT/Codex window. Desktop mode needs mouse interaction for
                 // the pin button and dragging, so it drops WS_EX_TRANSPARENT.
@@ -1047,10 +1237,6 @@ namespace CodexRateMonitorNative
             bool modeChanged = overlayMode != newMode;
             overlayMode = newMode;
 
-            // The rounded region still receives WinForms' background paint at
-            // its antialiased edge. Keep that paint in the same color as the
-            // outer surface so the system control color cannot leak into the
-            // border, especially against dark desktop backgrounds.
             BackColor = ColorTools.Parse(settings.Style.Background);
 
             if (modeChanged)
@@ -1059,12 +1245,11 @@ namespace CodexRateMonitorNative
                 RecreateHandle();
             }
 
-            Opacity = settings.Style.Opacity;
             UpdateOverlaySize();
 
             if (overlayMode == "desktop" && Visible)
                 ShowDesktop();
-            Invalidate();
+            RefreshSurface();
         }
 
         private bool ShowCreditsBadge
@@ -1079,28 +1264,61 @@ namespace CodexRateMonitorNative
 
         private void UpdateOverlaySize()
         {
-            bool credits = ShowCreditsBadge;
-            int baseWidth = settings.DisplayLines == "2"
-                ? DrawingHelpers.BottomRightWidth
-                : (credits ? DrawingHelpers.TopWidthWithCredits : 470);
-            int baseHeight = settings.DisplayLines == "2"
-                ? (credits
-                    ? DrawingHelpers.BottomRightHeightWithCredits
-                    : DrawingHelpers.BottomRightHeight)
-                : 40;
-            int width = (int)Math.Round(baseWidth * settings.Style.Scale);
-            int height = (int)Math.Round(baseHeight * settings.Style.Scale);
-            Size = new Size(width, height);
-            UpdateRegion();
+            Size = OverlayRenderer.GetPixelSize(settings, ShowCreditsBadge, overlayDpi);
+            if (Visible && overlayMode == "desktop")
+                Location = ClampLocationToScreen(Location);
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            creatingSurfaceHandle = true;
+            try
+            {
+                base.OnHandleCreated(e);
+                ApplyDpi(DisplayDpi.ForWindow(Handle), Location);
+            }
+            finally { creatingSurfaceHandle = false; }
+            // WinForms finishes applying extended styles after WM_CREATE.
+            // Present only after creation is complete, including recreation
+            // when switching between desktop and attachment modes.
+            BeginInvoke((MethodInvoker)RefreshSurface);
+        }
+
+        protected override void OnDpiChanged(DpiChangedEventArgs e)
+        {
+            // Rebuild from the 96-DPI baseline instead of multiplying the old
+            // window size. Keep a placed desktop overlay stationary on its
+            // monitor; use Windows' suggested location when crossing monitors.
+            e.Cancel = true;
+            base.OnDpiChanged(e);
+            bool sameScreen = Screen.FromRectangle(Bounds).DeviceName ==
+                Screen.FromRectangle(e.SuggestedRectangle).DeviceName;
+            ApplyDpi(e.DeviceDpiNew, overlayMode == "desktop" && sameScreen
+                ? Location : e.SuggestedRectangle.Location);
+            if (dragging)
+                dragOffset = new Point(Control.MousePosition.X - Left, Control.MousePosition.Y - Top);
+        }
+
+        private void ApplyDpi(int dpi, Point location)
+        {
+            if (applyingDpi || settings == null)
+                return;
+            applyingDpi = true;
+            try
+            {
+                overlayDpi = Math.Max(96, dpi);
+                Location = location;
+                UpdateOverlaySize();
+                if (overlayMode == "attach" && attachedWindow != IntPtr.Zero)
+                    AttachTo(attachedWindow);
+                RefreshSurface();
+            }
+            finally { applyingDpi = false; }
         }
 
         protected override void OnPaintBackground(PaintEventArgs e)
         {
-            // Paint the clipped form region with the theme surface. The outer
-            // path is drawn on top in OnPaint, so this also fills the small
-            // antialiasing gap around the path without a mismatched default
-            // WinForms background color.
-            e.Graphics.Clear(ColorTools.Parse(settings.Style.Background));
+            e.Graphics.Clear(Color.Transparent);
         }
 
         public void SetSnapshot(RateSnapshot value)
@@ -1116,28 +1334,28 @@ namespace CodexRateMonitorNative
             }
             snapshot = value;
             status = null;
-            Invalidate();
+            RefreshSurface();
         }
 
         public void SetStatus(string value)
         {
             if (snapshot == null)
                 status = value;
-            Invalidate();
+            RefreshSurface();
         }
 
         public void ClearSnapshot(string value)
         {
             snapshot = null;
             status = value;
-            Invalidate();
+            RefreshSurface();
         }
 
         public void SetResetCredits(ResetCreditsInfo value)
         {
             resetCredits = value;
             UpdateOverlaySize();
-            Invalidate();
+            RefreshSurface();
         }
 
         public void AttachTo(IntPtr codexWindow)
@@ -1149,17 +1367,29 @@ namespace CodexRateMonitorNative
                 return;
             }
 
+            attachedWindow = codexWindow;
+            // The target may itself be DPI-unaware, so its window DPI is not
+            // necessarily the effective DPI of the monitor hosting it.
+            int dpi = DisplayDpi.ForWindowMonitor(codexWindow, Handle);
+            if (overlayDpi != dpi)
+            {
+                overlayDpi = dpi;
+                UpdateOverlaySize();
+                RefreshSurface();
+            }
+            int inset = (int)Math.Round(12d * overlayDpi / 96d);
+
             int x;
             int y;
             if (settings.Position == "bottom-right")
             {
-                x = rect.Right - Width - 12;
-                y = rect.Bottom - Height - 12;
+                x = rect.Right - Width - inset;
+                y = rect.Bottom - Height - inset;
             }
             else
             {
                 x = rect.Left + ((rect.Right - rect.Left) - Width) / 2;
-                y = rect.Top + 4;
+                y = rect.Top + (int)Math.Round(4d * overlayDpi / 96d);
             }
 
             NativeMethods.SetWindowPos(
@@ -1194,18 +1424,22 @@ namespace CodexRateMonitorNative
             // settings form — must only re-assert topmost, never reposition. This
             // keeps a user-placed desktop window pinned where they left it.
             if (!Visible)
+            {
                 Location = ResolveDesktopLocation();
+                ApplyDpi(DisplayDpi.ForWindow(Handle), Location);
+                Location = ResolveDesktopLocation();
+            }
             if (!Visible)
                 NativeMethods.ShowWindow(Handle, NativeMethods.SW_SHOWNOACTIVATE);
             BringToFront();
-            Invalidate();
+            RefreshSurface();
         }
 
         // The desktop overlay is always topmost so it can cover the shell
         // taskbar (which is itself topmost). Re-asserted every 50ms by the
         // dedicated topmostTimer to stay locked above the taskbar at all times,
         // like desktop lyric overlays.
-        private void BringToFront()
+        private new void BringToFront()
         {
             NativeMethods.SetWindowPos(
                 Handle,
@@ -1247,7 +1481,7 @@ namespace CodexRateMonitorNative
                     : Screen.GetBounds(Point.Empty);
                 desired = new Point(
                     area.Left + (area.Width - Width) / 2,
-                    area.Bottom - Height - 16);
+                    area.Bottom - Height - (int)Math.Round(16d * overlayDpi / 96d));
             }
             // Clamp to the full screen bounds (which includes the taskbar region) so the
             // overlay can be parked on top of the taskbar; it only prevents the
@@ -1330,238 +1564,24 @@ namespace CodexRateMonitorNative
             }
         }
 
-        private void UpdateRegion()
+        private void RefreshSurface()
         {
-            if (Width <= 0 || Height <= 0)
+            if (!IsHandleCreated || IsDisposed || presentingSurface || creatingSurfaceHandle)
                 return;
-            float radius = (float)(settings.Style.CornerRadius * settings.Style.Scale);
-            using (GraphicsPath path = DrawingHelpers.RoundRect(
-                new RectangleF(0, 0, Width, Height), radius))
+            presentingSurface = true;
+            try
             {
-                Region old = Region;
-                Region = new Region(path);
-                if (old != null)
-                    old.Dispose();
+                using (Bitmap bitmap = OverlayRenderer.CreateBitmap(settings, snapshot,
+                    resetCredits, status, overlayDpi))
+                    LayeredWindowSurface.Present(Handle, bitmap, settings.Style.Opacity);
             }
+            finally { presentingSurface = false; }
         }
 
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
-            Graphics g = e.Graphics;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-            float scale = (float)settings.Style.Scale;
-            g.ScaleTransform(scale, scale);
-
-            float areaW = Width / scale;
-            float areaH = Height / scale;
-            float cardW = areaW;
-            float cardH = areaH;
-            float radius = (float)settings.Style.CornerRadius;
-
-            Color outer = ColorTools.Parse(settings.Style.Background);
-            Color border = ColorTools.Parse(settings.Style.Border);
-            Color card = ColorTools.Parse(settings.Style.CardBackground);
-            Color text = ColorTools.Parse(settings.Style.Text);
-            Color muted = ColorTools.Parse(settings.Style.MutedText);
-            Color track = ColorTools.Parse(settings.Style.Track);
-
-            using (var outerBrush = new SolidBrush(outer))
-            using (var borderPen = new Pen(border, 1f))
-            using (GraphicsPath outerPath = DrawingHelpers.RoundRect(
-                new RectangleF(0.5f, 0.5f, cardW - 1f, cardH - 1f),
-                radius))
-            {
-                g.FillPath(outerBrush, outerPath);
-                g.DrawPath(borderPen, outerPath);
-            }
-
-            if (settings.DisplayLines == "2")
-            {
-                DrawCard(g, DrawingHelpers.GetBottomRightCardBounds(true),
-                    true, card, text, muted, track);
-                DrawCard(g, DrawingHelpers.GetBottomRightCardBounds(false),
-                    false, card, text, muted, track);
-                if (ShowCreditsBadge)
-                    DrawCreditsCard(g, DrawingHelpers.GetCreditsRowBounds(),
-                        card, text, muted, track);
-            }
-            else
-            {
-                DrawCard(g, new RectangleF(5, 5, 228, 30), true, card, text, muted, track);
-                DrawCard(g, new RectangleF(237, 5, 228, 30), false, card, text, muted, track);
-                if (ShowCreditsBadge)
-                    DrawCreditsCard(g, new RectangleF(469, 5, 148, 30),
-                        card, text, muted, track);
-            }
-        }
-
-        private void DrawCard(
-            Graphics g,
-            RectangleF bounds,
-            bool primary,
-            Color card,
-            Color text,
-            Color muted,
-            Color track)
-        {
-            float cardRadius = Math.Max(0, (float)settings.Style.CornerRadius - 3f);
-            using (var brush = new SolidBrush(card))
-            using (GraphicsPath path = DrawingHelpers.RoundRect(bounds, cardRadius))
-                g.FillPath(brush, path);
-
-            WindowUsage usage = snapshot == null ? null : (primary ? snapshot.Primary : snapshot.Secondary);
-            string label = primary ? I18n.T("FiveHour") : I18n.T("SevenDay");
-            double value = usage == null
-                ? 0d
-                : UsageDisplayTools.GetDisplayedPercent(
-                    usage.UsedPercent, settings.UsageDisplay);
-            string percent = usage == null ? "--%" :
-                UsageDisplayTools.FormatPercent(value);
-            string reset = usage == null
-                ? (snapshot == null ? (status ?? I18n.T("Connecting")) : I18n.T("Unavailable"))
-                : FormatReset(usage.ResetsAt);
-
-            FontFamily family;
-            try
-            {
-                family = new FontFamily(settings.Style.FontFamily);
-            }
-            catch
-            {
-                family = SystemFonts.MessageBoxFont.FontFamily;
-            }
-
-            float mainFontSize = (float)settings.Style.FontSize;
-            float resetFontSize = (float)settings.Style.ResetFontSize;
-            using (family)
-            using (var mainFont = new Font(family, mainFontSize, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (var resetFont = new Font(family, resetFontSize, FontStyle.Regular, GraphicsUnit.Pixel))
-            using (var textBrush = new SolidBrush(text))
-            using (var mutedBrush = new SolidBrush(muted))
-            {
-                DrawingHelpers.DrawUsageText(
-                    g, bounds, label, percent, reset,
-                    mainFont, resetFont, textBrush, mutedBrush);
-            }
-
-            Color normal = ColorTools.Parse(primary ? settings.Style.Primary : settings.Style.Secondary);
-            Color progress = usage == null
-                ? normal
-                : UsageDisplayTools.GetProgressColor(
-                    value,
-                    settings.UsageDisplay,
-                    normal,
-                    ColorTools.Parse(settings.Style.Warning),
-                    ColorTools.Parse(settings.Style.Danger));
-
-            RectangleF trackRect = new RectangleF(bounds.X + 7, bounds.Bottom - 4, bounds.Width - 14, 2);
-            using (var trackBrush = new SolidBrush(track))
-                g.FillRectangle(trackBrush, trackRect);
-            using (var progressBrush = new SolidBrush(progress))
-                g.FillRectangle(progressBrush,
-                    new RectangleF(
-                        trackRect.X,
-                        trackRect.Y,
-                        trackRect.Width * (float)value / 100f,
-                        trackRect.Height));
-        }
-
-        // Third card: rate-limit reset credits (READ-ONLY display; the app
-        // never redeems credits). Shows the available count, the earliest
-        // expiry among available credits, and a thin bar with the elapsed
-        // fraction of that credit's 30-day lifetime. The bar/deadline color
-        // escalates: normal muted -> warning within 7 days -> danger within 3.
-        private void DrawCreditsCard(
-            Graphics g,
-            RectangleF bounds,
-            Color card,
-            Color text,
-            Color muted,
-            Color track)
-        {
-            ResetCreditsInfo info = resetCredits;
-            if (info == null)
-                return;
-
-            float cardRadius = Math.Max(0, (float)settings.Style.CornerRadius - 3f);
-
-            // Deadline escalation: >7 days keeps the calm card, <=7 days turns
-            // the texts amber, <=3 days additionally tints the card background
-            // red -- an expiring reset is paid-for capacity about to vanish.
-            double daysLeft = info.EarliestExpiry.HasValue
-                ? (info.EarliestExpiry.Value - DateTime.Now).TotalDays
-                : 99d;
-            Color deadline = daysLeft <= 3d
-                ? ColorTools.Parse(settings.Style.Danger)
-                : (daysLeft <= 7d
-                    ? ColorTools.Parse(settings.Style.Warning)
-                    : muted);
-            Color cardFill = card;
-            if (daysLeft <= 3d)
-            {
-                Color danger = ColorTools.Parse(settings.Style.Danger);
-                cardFill = Color.FromArgb(
-                    Math.Min(255, card.R + 38),
-                    (card.G + danger.G) / 2,
-                    (card.B + danger.B) / 2);
-            }
-
-            using (var brush = new SolidBrush(cardFill))
-            using (GraphicsPath path = DrawingHelpers.RoundRect(bounds, cardRadius))
-                g.FillPath(brush, path);
-
-            string count = string.Format(CultureInfo.InvariantCulture,
-                I18n.T("CreditsBadge"),
-                info.AvailableCount.ToString(CultureInfo.InvariantCulture));
-            string expiry = string.Format(CultureInfo.InvariantCulture,
-                I18n.T("CreditsExpire"),
-                info.FormatEarliestExpiry());
-
-            FontFamily family;
-            try
-            {
-                family = new FontFamily(settings.Style.FontFamily);
-            }
-            catch
-            {
-                family = SystemFonts.MessageBoxFont.FontFamily;
-            }
-
-            float creditFontSize = (float)Math.Max(10, settings.Style.ResetFontSize);
-            using (family)
-            using (var mainFont = new Font(family, creditFontSize, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (var smallFont = new Font(family, creditFontSize, FontStyle.Regular, GraphicsUnit.Pixel))
-            using (var textBrush = new SolidBrush(daysLeft <= 7d ? deadline : text))
-            using (var deadlineBrush = new SolidBrush(deadline))
-            {
-                DrawingHelpers.DrawCreditsText(
-                    g, bounds, count, expiry, mainFont, smallFont, textBrush, deadlineBrush);
-            }
-
-            RectangleF trackRect = new RectangleF(bounds.X + 7, bounds.Bottom - 4, bounds.Width - 14, 2);
-            using (var trackBrush = new SolidBrush(track))
-                g.FillRectangle(trackBrush, trackRect);
-            double fraction = info.ElapsedFraction();
-            if (fraction > 0d)
-            {
-                using (var progressBrush = new SolidBrush(deadline))
-                    g.FillRectangle(progressBrush,
-                        new RectangleF(
-                            trackRect.X,
-                            trackRect.Y,
-                            trackRect.Width * (float)Math.Min(1d, fraction),
-                            trackRect.Height));
-            }
-        }
-
-        private static string FormatReset(long? unixSeconds)
-        {
-            if (!unixSeconds.HasValue)
-                return "--";
-            DateTime local = DateTimeOffset.FromUnixTimeSeconds(unixSeconds.Value).LocalDateTime;
-            return I18n.FormatDate(local);
+            OverlayRenderer.Paint(e.Graphics, settings, snapshot, resetCredits, status, overlayDpi);
         }
     }
 
@@ -1571,19 +1591,25 @@ namespace CodexRateMonitorNative
         private readonly object writeLock = new object();
         private readonly object requestLock = new object();
         private readonly HashSet<int> rateLimitRequests = new HashSet<int>();
+        private readonly Dictionary<int, int> accountRequests = new Dictionary<int, int>();
+        private bool waitingForAccountSnapshot;
         private Process process;
         private Thread outputThread;
         private Thread errorThread;
         private int requestId = 10;
         private int generation;
+        private int notificationSequence;
         private bool disposed;
 
         public event Action<RateSnapshot, int> SnapshotReceived;
         public event Action<string, int> StatusChanged;
         public event Action<int, int> AuthRevoked;
+        public event Action<int> Initialized;
+        public event Action<int, int, bool> ReadCompleted;
+        public event Action<AccountState, int> AccountObserved;
+        public event Action<int> AccountUpdated;
 
-        // Raised whenever the server pushes account/rateLimits/updated. On a
-        // long-lived app-server this proves the channel delivers fresh data.
+        // Notifications belong to this stdio connection, not the desktop GUI's.
         public event Action<int> UpdateNotificationReceived;
 
         public bool IsInitialized { get; private set; }
@@ -1666,6 +1692,7 @@ namespace CodexRateMonitorNative
             int startedGeneration = Interlocked.Increment(ref generation);
             Process startedProcess = process;
             IsInitialized = false;
+            waitingForAccountSnapshot = true;
             DiagnosticLog.Write(
                 "app-server-started",
                 "pid=" + process.Id.ToString(CultureInfo.InvariantCulture) +
@@ -1706,35 +1733,68 @@ namespace CodexRateMonitorNative
             Send(initialize);
         }
 
-        public void RequestRateLimits()
+        public int RequestRateLimits(Action<int> onStarted)
         {
-            if (!IsInitialized)
-                return;
-            int id = Interlocked.Increment(ref requestId);
+            if (!IsInitialized || !IsRunning)
+                return 0;
+            int id, accountId;
             lock (requestLock)
+            {
+                if (rateLimitRequests.Count > 0) return 0;
+                id = Interlocked.Increment(ref requestId);
+                accountId = Interlocked.Increment(ref requestId);
                 rateLimitRequests.Add(id);
-            DiagnosticLog.Write(
-                "rate-request",
-                "id=" + id.ToString(CultureInfo.InvariantCulture));
-            var message = new Dictionary<string, object>();
-            message["method"] = "account/rateLimits/read";
-            message["id"] = id;
-            message["params"] = new Dictionary<string, object>();
-            Send(message);
+                accountRequests[accountId] = id;
+            }
+            if (onStarted != null) onStarted(id);
+            // A local identity check prevents old account data from surviving a
+            // switch. false avoids a proactive token refresh on every poll.
+            SendRead("account/read", accountId,
+                new Dictionary<string, object> { { "refreshToken", false } }, id);
+            return id;
+        }
+
+        public void CancelRateLimitsRequest(int id)
+        {
+            lock (requestLock)
+            {
+                rateLimitRequests.Remove(id);
+                foreach (int key in accountRequests.Where(p => p.Value == id).Select(p => p.Key).ToArray())
+                    accountRequests.Remove(key);
+            }
+        }
+
+        private void SendRead(string method, int rpcId, Dictionary<string, object> parameters, int readId)
+        {
+            try
+            {
+                lock (requestLock)
+                {
+                    if (!rateLimitRequests.Contains(readId)) return;
+                    if (!IsRunning) throw new IOException("Child exited");
+                    DiagnosticLog.Write(method == "account/read" ? "account-request" : "rate-request",
+                        "id=" + rpcId.ToString(CultureInfo.InvariantCulture) +
+                        " read_id=" + readId + " generation=" + Generation);
+                    Send(new Dictionary<string, object> { { "method", method }, { "id", rpcId }, { "params", parameters } });
+                }
+            }
+            catch (Exception ex)
+            {
+                CancelRateLimitsRequest(readId);
+                DiagnosticLog.Write("rate-send-failed", "type=" + ex.GetType().Name);
+                RaiseReadCompleted(readId, Generation, false);
+                RaiseStatus(I18n.T("ServiceError"), Generation);
+            }
         }
 
         // Full child restart. NOT part of the normal refresh loop any more --
-        // periodic refresh uses lightweight account/rateLimits/read requests on
-        // the long-lived server (see MonitorContext). Kept only as an occasional
-        // resync when the read channel looks pinned.
+        // periodic refresh uses the long-lived server. Only auth recovery uses
+        // this restart path.
         public void RefreshRateLimits(bool force = false)
         {
             if (!force && !IsInitialized)
                 return;
 
-            // account/rateLimits/read can remain pinned to the snapshot captured when
-            // a long-lived app-server starts. Recreate the local child so each resync
-            // reads current server-side limits.
             DiagnosticLog.Write("app-server-refresh", "action=restart");
             DisposeProcess();
             Start();
@@ -1816,7 +1876,45 @@ namespace CodexRateMonitorNative
                 Send(initialized);
                 IsInitialized = true;
                 DiagnosticLog.Write("app-server-initialized", null);
-                RequestRateLimits();
+                Action<int> ready = Initialized;
+                if (ready != null) ready(startedGeneration);
+                return;
+            }
+
+            int readId = 0;
+            if (TryInt(message, "id", out id))
+            {
+                lock (requestLock)
+                {
+                    if (accountRequests.TryGetValue(id, out readId))
+                        accountRequests.Remove(id);
+                }
+            }
+            if (readId != 0)
+            {
+                if (message.ContainsKey("error"))
+                {
+                    CancelRateLimitsRequest(readId);
+                    RaiseReadCompleted(readId, startedGeneration, false);
+                    var error = GetDictionary(message, "error");
+                    DiagnosticLog.Write("account-response-error", "id=" + id + " read_id=" + readId +
+                        " generation=" + startedGeneration + " " + DescribeError(error));
+                    if (IsAuthRevokedError(error)) RaiseAuthRevoked(startedGeneration, LatestRequestId);
+                    else RaiseStatus(I18n.T("ServiceError"), startedGeneration);
+                    return;
+                }
+                AccountState account = ParseAccount(GetDictionary(message, "result"));
+                account.ReadRequestId = readId;
+                Action<AccountState, int> observed = AccountObserved;
+                if (observed != null) observed(account, startedGeneration);
+                if (!account.CanReadQuota)
+                {
+                    waitingForAccountSnapshot = true;
+                    CancelRateLimitsRequest(readId);
+                    RaiseReadCompleted(readId, startedGeneration, false);
+                    return;
+                }
+                SendRead("account/rateLimits/read", readId, new Dictionary<string, object>(), readId);
                 return;
             }
 
@@ -1838,13 +1936,11 @@ namespace CodexRateMonitorNative
                 if (message.ContainsKey("error"))
                 {
                     var error = GetDictionary(message, "error");
-                    string detail = GetString(error, "message");
-                    if (string.IsNullOrEmpty(detail))
-                        detail = DescribeRawMessage(message);
                     DiagnosticLog.Write(
                         "rate-response-error",
                         "id=" + id.ToString(CultureInfo.InvariantCulture) +
-                        " error=" + detail);
+                        " generation=" + startedGeneration + " " + DescribeError(error));
+                    RaiseReadCompleted(id, startedGeneration, false);
                     if (IsAuthRevokedError(error))
                         RaiseAuthRevoked(startedGeneration, LatestRequestId);
                     else
@@ -1857,29 +1953,81 @@ namespace CodexRateMonitorNative
                     snapshot.ReadRequestId = id;
                 DiagnosticLog.Write(
                     "rate-response",
-                    "id=" + id.ToString(CultureInfo.InvariantCulture) +
+                    "id=" + id.ToString(CultureInfo.InvariantCulture) + " generation=" + startedGeneration +
                     " raw=" + DescribeRateLimitsContainer(result) +
                     " parsed=" + DescribeSnapshot(snapshot));
+                RaiseReadCompleted(id, startedGeneration, snapshot != null);
                 if (snapshot != null)
+                {
+                    waitingForAccountSnapshot = false;
                     RaiseSnapshot(snapshot, startedGeneration);
+                }
+                else
+                    RaiseStatus(I18n.T("ServiceError"), startedGeneration);
                 return;
             }
 
             string method = GetString(message, "method");
+            if (method == "account/updated")
+            {
+                DiagnosticLog.Write("account-notification-received", "generation=" + startedGeneration);
+                lock (requestLock)
+                {
+                    rateLimitRequests.Clear();
+                    accountRequests.Clear();
+                }
+                waitingForAccountSnapshot = true;
+                Action<int> changed = AccountUpdated;
+                if (changed != null) changed(startedGeneration);
+                return;
+            }
             if (method == "account/rateLimits/updated")
             {
+                int notificationId = Interlocked.Increment(ref notificationSequence);
+                string notificationDetails = "id=" + notificationId + " generation=" + startedGeneration;
+                DiagnosticLog.Write("rate-notification-received", notificationDetails);
+                if (waitingForAccountSnapshot)
+                {
+                    DiagnosticLog.Write("rate-notification-ignored", notificationDetails + " reason=account-unverified");
+                    return;
+                }
                 var parameters = GetDictionary(message, "params");
                 RateSnapshot snapshot = ParseRateLimitsContainer(parameters);
                 DiagnosticLog.Write(
                     "rate-notification",
-                    "raw=" + DescribeRateLimitsContainer(parameters) +
+                    notificationDetails + " state=" + (snapshot == null ? "invalid" : "accepted-for-validation") +
+                    " raw=" + DescribeRateLimitsContainer(parameters) +
                     " parsed=" + DescribeSnapshot(snapshot));
                 Action<int> notificationHandler = UpdateNotificationReceived;
                 if (notificationHandler != null)
                     notificationHandler(startedGeneration);
                 if (snapshot != null)
+                {
+                    snapshot.NotificationId = notificationId;
                     RaiseSnapshot(snapshot, startedGeneration);
+                }
+                else DiagnosticLog.Write("rate-notification-ignored", notificationDetails + " reason=invalid-payload");
+                return;
             }
+            if (TryInt(message, "id", out id))
+                DiagnosticLog.Write("app-server-response-ignored", "id=" + id +
+                    " generation=" + startedGeneration + " reason=untracked-read");
+        }
+
+        private static AccountState ParseAccount(Dictionary<string, object> result)
+        {
+            var account = GetDictionary(result, "account");
+            string type = GetString(account, "type") ?? "signed-out";
+            string identity = type + "|" + (GetString(account, "email") ?? "").Trim().ToLowerInvariant() +
+                "|" + (GetString(account, "accountId") ?? "");
+            string fingerprint;
+            using (SHA256 hash = SHA256.Create())
+                fingerprint = Convert.ToBase64String(hash.ComputeHash(Encoding.UTF8.GetBytes(identity)));
+            return new AccountState {
+                Fingerprint = fingerprint,
+                CanReadQuota = type == "chatgpt",
+                StatusKey = type == "signed-out" ? "NotSignedIn" : "ChatGptAuthRequired"
+            };
         }
 
         private RateSnapshot ParseReadResult(Dictionary<string, object> result)
@@ -1895,11 +2043,11 @@ namespace CodexRateMonitorNative
             if (source == null)
                 return null;
 
-            RateSnapshot snapshot = ParseSnapshot(GetDictionary(source, "rateLimits"));
+            RateSnapshot snapshot = ParseByLimitId(GetDictionary(source, "rateLimitsByLimitId"));
             if (HasUsageWindow(snapshot))
                 return snapshot;
 
-            snapshot = ParseByLimitId(GetDictionary(source, "rateLimitsByLimitId"));
+            snapshot = ParseSnapshot(GetDictionary(source, "rateLimits"));
             if (HasUsageWindow(snapshot))
                 return snapshot;
 
@@ -1918,13 +2066,6 @@ namespace CodexRateMonitorNative
             RateSnapshot snapshot = ParseSnapshot(GetDictionary(byId, "codex"));
             if (HasUsageWindow(snapshot))
                 return snapshot;
-
-            foreach (object raw in byId.Values)
-            {
-                snapshot = ParseSnapshot(raw as Dictionary<string, object>);
-                if (HasUsageWindow(snapshot))
-                    return snapshot;
-            }
 
             return null;
         }
@@ -2035,7 +2176,31 @@ namespace CodexRateMonitorNative
                 text.IndexOf("api key auth is not supported", StringComparison.OrdinalIgnoreCase) >= 0)
                 return I18n.T("ChatGptAuthRequired");
 
-            return I18n.T("NotSignedIn");
+            if (text.IndexOf("not signed in", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                text.IndexOf("401", StringComparison.OrdinalIgnoreCase) >= 0)
+                return I18n.T("NotSignedIn");
+            return I18n.T("ServiceError");
+        }
+
+        internal static string DescribeError(Dictionary<string, object> error)
+        {
+            int code;
+            bool hasCode = TryInt(error, "code", out code);
+            string message = (GetString(error, "message") ?? "").ToLowerInvariant();
+            string category = "unknown";
+            if (IsAuthRevokedError(error) || hasCode && (code == 401 || code == 403) ||
+                message.Contains("not signed in") || message.Contains("authentication required")) category = "auth";
+            else if (hasCode && code == 429 || message.Contains("429") || message.Contains("too many requests")) category = "rate-limited";
+            else if (hasCode && (code == 408 || code == 504) || message.Contains("timeout") || message.Contains("timed out")) category = "timeout";
+            else if (message.Contains("connection") || message.Contains("network") || message.Contains("dns") ||
+                message.Contains("econn") || message.Contains("failed to send request")) category = "network";
+            else if (hasCode && code >= 500 && code <= 599) category = "server";
+            else if (hasCode && (code == -32700 || code == -32600 || code == -32601 || code == -32602)) category = "protocol";
+            else if (hasCode && code == -32603) category = "server";
+            // Only fixed categories and a numeric protocol code leave this method.
+            // The original error message/data can contain URLs, identities or credentials.
+            return "category=" + category + " code=" + (hasCode ? code.ToString(CultureInfo.InvariantCulture) : "unavailable") +
+                " content=redacted";
         }
 
         private static bool IsAuthRevokedError(Dictionary<string, object> error)
@@ -2124,6 +2289,12 @@ namespace CodexRateMonitorNative
             Action<RateSnapshot, int> handler = SnapshotReceived;
             if (handler != null)
                 handler(snapshot, startedGeneration);
+        }
+
+        private void RaiseReadCompleted(int id, int startedGeneration, bool success)
+        {
+            Action<int, int, bool> handler = ReadCompleted;
+            if (handler != null) handler(id, startedGeneration, success);
         }
 
         private void RaiseStatus(string status, int startedGeneration)
@@ -2241,7 +2412,11 @@ namespace CodexRateMonitorNative
         {
             IsInitialized = false;
             lock (requestLock)
+            {
                 rateLimitRequests.Clear();
+                accountRequests.Clear();
+            }
+            waitingForAccountSnapshot = true;
 
             Process current = process;
             process = null;
@@ -2493,6 +2668,16 @@ namespace CodexRateMonitorNative
 
     internal static class WindowLocator
     {
+        public static DesktopUsageState GetUsageState(IntPtr mainWindow)
+        {
+            if (mainWindow == IntPtr.Zero || !NativeMethods.IsWindowVisible(mainWindow) ||
+                NativeMethods.IsIconic(mainWindow)) return DesktopUsageState.Minimized;
+            uint mainPid, foregroundPid;
+            NativeMethods.GetWindowThreadProcessId(mainWindow, out mainPid);
+            NativeMethods.GetWindowThreadProcessId(NativeMethods.GetForegroundWindow(), out foregroundPid);
+            return mainPid != 0 && mainPid == foregroundPid ?
+                DesktopUsageState.Foreground : DesktopUsageState.Background;
+        }
         // True when the ChatGPT/Codex desktop app is running, even if its main
         // window is minimized to the tray (no visible window). Used to keep
         // low-frequency monitoring alive while the window is hidden.
@@ -2644,99 +2829,6 @@ namespace CodexRateMonitorNative
         }
     }
 
-    internal static class DiagnosticLog
-    {
-        private static readonly object Sync = new object();
-        private static bool enabled;
-        private static int retentionDays = 7;
-        private static DateTime nextCleanupUtc = DateTime.MinValue;
-
-        public static string DirectoryPath
-        {
-            get
-            {
-                return Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "CodexRateMonitor",
-                    "logs");
-            }
-        }
-
-        public static void Configure(bool isEnabled, int days)
-        {
-            lock (Sync)
-            {
-                enabled = isEnabled;
-                retentionDays = Math.Max(1, Math.Min(30, days));
-                nextCleanupUtc = DateTime.MinValue;
-            }
-            CleanupIfDue();
-        }
-
-        public static void Write(string eventName, string details)
-        {
-            lock (Sync)
-            {
-                if (!enabled)
-                    return;
-                try
-                {
-                    Directory.CreateDirectory(DirectoryPath);
-                    string path = Path.Combine(
-                        DirectoryPath,
-                        "usage-" + DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) +
-                        ".log");
-                    string line = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture) +
-                        " " + Clean(eventName);
-                    if (!string.IsNullOrWhiteSpace(details))
-                        line += " " + Clean(details);
-                    File.AppendAllText(path, line + Environment.NewLine, new UTF8Encoding(false));
-                }
-                catch
-                {
-                }
-            }
-        }
-
-        public static void CleanupIfDue()
-        {
-            lock (Sync)
-            {
-                if (!enabled || DateTime.UtcNow < nextCleanupUtc)
-                    return;
-                nextCleanupUtc = DateTime.UtcNow.AddHours(1);
-                try
-                {
-                    if (!Directory.Exists(DirectoryPath))
-                        return;
-                    DateTime cutoff = DateTime.UtcNow.Date.AddDays(1 - retentionDays);
-                    foreach (string path in Directory.GetFiles(DirectoryPath, "usage-*.log"))
-                    {
-                        try
-                        {
-                            if (File.GetLastWriteTimeUtc(path) < cutoff)
-                                File.Delete(path);
-                        }
-                        catch
-                        {
-                        }
-                    }
-                }
-                catch
-                {
-                }
-            }
-        }
-
-        private static string Clean(string value)
-        {
-            return (value ?? string.Empty)
-                .Replace('\r', ' ')
-                .Replace('\n', ' ')
-                .Replace('\t', ' ');
-        }
-    }
-
     internal sealed class MonitorSettings
     {
         public string Language { get; set; }
@@ -2747,6 +2839,7 @@ namespace CodexRateMonitorNative
         // Position so the corner placement and the line count are independent.
         public string DisplayLines { get; set; }
         public int RefreshSeconds { get; set; }
+        public int ForegroundRefreshSeconds { get; set; }
         public bool DiagnosticsEnabled { get; set; }
         public int DiagnosticRetentionDays { get; set; }
         public StyleSettings Style { get; set; }
@@ -2774,7 +2867,8 @@ namespace CodexRateMonitorNative
             DisplayLines = "1";
             UsageDisplay = "remaining";
             RefreshSeconds = 60;
-            DiagnosticsEnabled = true;
+            ForegroundRefreshSeconds = 30;
+            DiagnosticsEnabled = false;
             DiagnosticRetentionDays = 7;
             Style = new StyleSettings();
             OverlayMode = "desktop";
@@ -2796,15 +2890,44 @@ namespace CodexRateMonitorNative
             try
             {
                 string text = File.ReadAllText(SettingsPath, Encoding.UTF8);
-                var loaded = new JavaScriptSerializer().Deserialize<MonitorSettings>(text);
-                if (loaded != null)
-                    result = loaded;
+                result = Parse(text);
             }
             catch
             {
             }
             result.Normalize();
             return result;
+        }
+
+        internal static MonitorSettings Parse(string text)
+        {
+            var serializer = new JavaScriptSerializer();
+            var root = serializer.DeserializeObject(text) as Dictionary<string, object>;
+            if (root == null) throw new FormatException("Settings must be a JSON object.");
+            var result = serializer.Deserialize<MonitorSettings>(text) ?? new MonitorSettings();
+            var rawStyle = FindProperty(root, "Style") as Dictionary<string, object>;
+            if (rawStyle == null || !HasProperty(rawStyle, "ScaleBasisVersion"))
+            {
+                // Existing files predate the compact baseline. Retain their
+                // rendered size; absent scale uses the original release's 100%.
+                if (result.Style == null) result.Style = new StyleSettings();
+                result.Style.ScaleBasisVersion = 1;
+                if (rawStyle == null || !HasProperty(rawStyle, "Scale")) result.Style.Scale = 1;
+            }
+            result.Normalize();
+            return result;
+        }
+
+        private static object FindProperty(Dictionary<string, object> source, string key)
+        {
+            foreach (var item in source)
+                if (string.Equals(item.Key, key, StringComparison.OrdinalIgnoreCase)) return item.Value;
+            return null;
+        }
+
+        private static bool HasProperty(Dictionary<string, object> source, string key)
+        {
+            return source.Keys.Any(k => string.Equals(k, key, StringComparison.OrdinalIgnoreCase));
         }
 
         public void Save()
@@ -2828,6 +2951,7 @@ namespace CodexRateMonitorNative
             clone.UsageDisplay = UsageDisplay;
             clone.DisplayLines = DisplayLines;
             clone.RefreshSeconds = RefreshSeconds;
+            clone.ForegroundRefreshSeconds = ForegroundRefreshSeconds;
             clone.DiagnosticsEnabled = DiagnosticsEnabled;
             clone.DiagnosticRetentionDays = DiagnosticRetentionDays;
             clone.Style = Style == null ? new StyleSettings() : Style.Clone();
@@ -2852,6 +2976,7 @@ namespace CodexRateMonitorNative
                 OverlayMode = "desktop";
             UsageDisplay = UsageDisplayTools.Normalize(UsageDisplay);
             RefreshSeconds = Math.Max(30, Math.Min(900, RefreshSeconds));
+            ForegroundRefreshSeconds = Math.Max(30, Math.Min(RefreshSeconds, ForegroundRefreshSeconds));
             ResetCreditsSeconds = Math.Max(300, Math.Min(86400, ResetCreditsSeconds));
             MinimizedRefreshSeconds = Math.Max(60, Math.Min(3600, MinimizedRefreshSeconds));
             DiagnosticRetentionDays = Math.Max(1, Math.Min(30, DiagnosticRetentionDays));
@@ -2863,6 +2988,11 @@ namespace CodexRateMonitorNative
 
     internal sealed class StyleSettings
     {
+        internal const int CurrentScaleBasisVersion = 2;
+        internal const double BaselineScale = 0.85;
+        internal const double MinimumScale = 0.5;
+        internal const double MaximumScale = 2.0;
+        public int ScaleBasisVersion { get; set; }
         public double Scale { get; set; }
         public double Opacity { get; set; }
         public double CornerRadius { get; set; }
@@ -2882,7 +3012,8 @@ namespace CodexRateMonitorNative
 
         public StyleSettings()
         {
-            Scale = 1.0;
+            ScaleBasisVersion = CurrentScaleBasisVersion;
+            Scale = 1;
             Opacity = 0.97;
             CornerRadius = 9;
             FontSize = 14;
@@ -2902,7 +3033,13 @@ namespace CodexRateMonitorNative
 
         public void Normalize()
         {
-            Scale = Math.Max(0.75, Math.Min(1.5, Scale));
+            if (double.IsNaN(Scale) || double.IsInfinity(Scale)) Scale = 1;
+            if (ScaleBasisVersion < CurrentScaleBasisVersion)
+            {
+                Scale = Math.Max(0.75, Math.Min(1.5, Scale)) / BaselineScale;
+                ScaleBasisVersion = CurrentScaleBasisVersion;
+            }
+            Scale = Math.Max(MinimumScale, Math.Min(MaximumScale, Scale));
             Opacity = Math.Max(0.5, Math.Min(1.0, Opacity));
             CornerRadius = Math.Max(0, Math.Min(20, CornerRadius));
             FontSize = Math.Max(10, Math.Min(22, FontSize));
@@ -2925,6 +3062,7 @@ namespace CodexRateMonitorNative
         {
             return new StyleSettings
             {
+                ScaleBasisVersion = ScaleBasisVersion,
                 Scale = Scale,
                 Opacity = Opacity,
                 CornerRadius = CornerRadius,
@@ -2945,8 +3083,17 @@ namespace CodexRateMonitorNative
         }
     }
 
+    internal sealed class AccountState
+    {
+        public string Fingerprint { get; set; }
+        public bool CanReadQuota { get; set; }
+        public string StatusKey { get; set; }
+        public int ReadRequestId { get; set; }
+    }
+
     internal sealed class RateSnapshot
     {
+        public int NotificationId { get; set; }
         public WindowUsage Primary { get; set; }
         public WindowUsage Secondary { get; set; }
         public string PlanType { get; set; }
@@ -3193,6 +3340,13 @@ namespace CodexRateMonitorNative
         private RateSnapshot pending;
         private DateTimeOffset pendingObservedAt;
         private int pendingConfirmations;
+
+        public void Reset()
+        {
+            accepted = null;
+            pending = null;
+            pendingConfirmations = 0;
+        }
 
         public bool TryAccept(
             RateSnapshot candidate,
@@ -3579,10 +3733,6 @@ namespace CodexRateMonitorNative
             public int Right;
             public int Bottom;
         }
-
-        [DllImport("user32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        internal static extern bool SetProcessDPIAware();
 
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]

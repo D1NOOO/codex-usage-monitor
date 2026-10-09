@@ -6,7 +6,7 @@ using System.Windows.Forms;
 
 namespace CodexRateMonitorNative
 {
-    internal sealed class UpdateForm : Form
+    internal sealed class UpdateForm : DpiAwareDialog
     {
         private readonly UpdateInfo info;
         private readonly Button updateButton;
@@ -17,6 +17,7 @@ namespace CodexRateMonitorNative
 
         public UpdateForm(UpdateInfo value)
         {
+            SuspendLayout();
             info = value;
             Text = I18n.T("UpdateTitle");
             StartPosition = FormStartPosition.CenterScreen;
@@ -24,7 +25,6 @@ namespace CodexRateMonitorNative
             MaximizeBox = false;
             MinimizeBox = false;
             ClientSize = new Size(560, 430);
-            Font = SystemFonts.MessageBoxFont;
 
             var title = new Label();
             title.Text = I18n.F("UpdateAvailableTitle", info.Version);
@@ -87,6 +87,8 @@ namespace CodexRateMonitorNative
             cancelButton.DialogResult = DialogResult.Cancel;
             Controls.Add(cancelButton);
             CancelButton = cancelButton;
+            InitializeDpiLayout(new Size(560, 430));
+            ResumeLayout(true);
         }
 
         public void SetBusy(string text)

@@ -28,7 +28,9 @@
 
 ![通知區域浮動提示](docs/tray-tooltip-zh-cn.png)
 
-外觀設定提供即時預覽：位置、字型、顏色、透明度，以及「顯示重置券（唯讀查詢）」開關。
+外觀設定提供樣式預覽：位置、字型、顏色、透明度，以及「顯示重置券（唯讀查詢）」開關。預覽中的用量、時間和重置券數量為示範資料。
+浮動列會即時跟隨 Windows 顯示縮放，「整體縮放」在此基礎上疊加。預覽空間足夠時按實際尺寸顯示，空間不足時會標明縮小比例。
+整體縮放預設新的 100%（對應原來 85% 的尺寸），可在「外觀設定 → 排版與尺寸 → 整體縮放」調整為 50%–200%。字型、間距與圓角一起縮放，舊設定更新後保持實際大小。
 
 ![外觀設定](docs/appearance-settings-reset-credits-zh-cn.png)
 
@@ -64,12 +66,17 @@ EXE 未做商業簽章，SmartScreen 可能提示未知發行者；請只從 Rel
 
 | 情境 | 行為 |
 |---|---|
-| ChatGPT/Codex 視窗可見 | 每 `RefreshSeconds`（預設 60s）一次輕量讀取 |
+| ChatGPT/Codex 位於前景 | 每 `ForegroundRefreshSeconds`（預設 30s）一次輕量讀取 |
+| 視窗可見但位於背景 | 每 `RefreshSeconds`（預設 60s）一次讀取 |
 | 視窗最小化 / 僅通知區域 | 降頻到 `MinimizedRefreshSeconds`（預設 300s） |
 | 重置券查詢 | 每 `ResetCreditsSeconds`（預設 30 分鐘）一次唯讀請求 |
 
-app-server 程序全程常駐複用：週期重新整理傳送 `account/rateLimits/read` 請求並合併
-`account/rateLimits/updated` 推送，不再每次輪詢都重啟程序。app-server 也可能自行發出
+app-server 程序全程常駐複用：先以 `account/read`（`refreshToken: false`）確認本機帳號，
+再傳送 `account/rateLimits/read`，並接收監視器自身連線的 `account/rateLimits/updated`
+通知。切回前景、還原視窗、系統喚醒後等待 1 秒合併補刷；同時觸發的重新整理複用
+一個請求，30 秒逾時，失敗後逐步退避到最多 5 分鐘。額度連續相同不會觸發重啟。
+浮動列與通知區域提示顯示上次確認更新的時間，帳號變更時清除舊資料。
+這能減少輪詢等待，但無法保證與官方介面獨立快取的資料逐秒一致。app-server 也可能自行發出
 背景請求，因此程序總流量可能高於用量讀取本身。
 
 如果 app-server 回報權杖失效，浮動列會立即清除舊用量。連續失敗時最多自動重啟
@@ -96,6 +103,11 @@ flowchart LR
 絕不核銷、不儲存、不外傳。診斷日誌寫入 `%LOCALAPPDATA%\CodexRateMonitor\logs`
 並自動清理，不含權杖與帳戶資訊。安全問題請依 [SECURITY.md](SECURITY.md) 私下回報。
 
+診斷預設關閉。排查時將 `settings.json` 中的 `DiagnosticsEnabled` 改為 `true`，
+重新啟動監視器後生效。日誌預設保留 7 天，單檔約 2 MiB 時輪轉，總容量預算 20 MiB；
+關閉診斷後，只要監視器仍在執行，也會清理過期日誌。重新整理原因、請求耗時、通知處理
+及重置時間補刷規則見 [用量重新整理與診斷說明](docs/usage-refresh.md)。
+
 ## 設定
 
 `settings.json`（來自 `config/settings.default.json`）常用欄位：
@@ -105,13 +117,19 @@ flowchart LR
 | `Language` | `auto` / `zh-CN` / `zh-TW` / `en` |
 | `OverlayMode` | `desktop`（預設，桌面懸浮）/ `attach`（吸附視窗） |
 | `UsageDisplay` | `remaining`（預設）/ `used` |
-| `RefreshSeconds` | 30–900，視窗可見時的重新整理間隔（預設 60） |
+| `ForegroundRefreshSeconds` | 30–`RefreshSeconds`，前景重新整理間隔（預設 30） |
+| `RefreshSeconds` | 30–900，視窗可見但位於背景時的重新整理間隔（預設 60） |
 | `MinimizedRefreshSeconds` | 60–3600，最小化時的重新整理間隔（預設 300） |
 | `ShowResetCredits` | 重置券卡片開關（預設開） |
 | `ResetCreditsSeconds` | 300–86400，重置券查詢間隔（預設 1800） |
-| `DiagnosticsEnabled` / `DiagnosticRetentionDays` | 診斷日誌開關與保留天數 |
+| `DiagnosticsEnabled` / `DiagnosticRetentionDays` | 診斷預設關閉，預設保留 7 天（1–30），總容量預算 20 MiB |
 
 其餘外觀欄位（字型、顏色 `#RRGGBB`、縮放、透明度等）見預設範本或外觀設定介面。
+
+整體縮放範圍為 50%–200%，新的 100% 使用原來 85% 的緊湊尺寸。舊設定在記憶體中換算，
+保持實際大小不變：舊 85% 對應新 100%，舊 100% 對應新約 117.65%。更新器保留既有
+`settings.json`，儲存設定時寫入 `Style.ScaleBasisVersion: 2`，避免重複換算；
+字型、顏色、透明度、位置及其他設定繼續保留。
 
 ## 建置與發佈
 

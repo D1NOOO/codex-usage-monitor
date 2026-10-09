@@ -22,6 +22,13 @@ jobs:
           ./scripts/verify.ps1
           ./scripts/build.ps1
 
+      - name: Verify usage refresh and authentication recovery
+        shell: pwsh
+        run: |
+          ./scripts/test-usage-refresh.ps1
+          ./scripts/test-auth-recovery-regression.ps1
+          ./scripts/test-scale-migration.ps1
+
       - name: Upload build artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
