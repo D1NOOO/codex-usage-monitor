@@ -31,8 +31,15 @@ Hovering the tray icon shows a multi-line summary of usage and reset credits.
 
 ![Tray tooltip](docs/tray-tooltip-zh-cn.png)
 
-Appearance settings offer a live preview: position, fonts, colors, opacity,
+Appearance settings offer a style preview: position, fonts, colors, opacity,
 and the reset-credits (read-only) toggle.
+The preview uses sample usage, reset times, and credit counts.
+The overlay follows Windows display scaling immediately; the appearance scale
+is an additional multiplier. Preview renders at actual size when it fits and
+shows the reduction percentage when space is limited.
+The appearance scale defaults to the new 100%, equivalent to the former 85% size.
+Adjust Appearance settings → Typography and size → Scale from 50% to 200%.
+Fonts, spacing, and corners scale together; existing configurations retain their size.
 
 ![Appearance settings](docs/appearance-settings-reset-credits-zh-cn.png)
 
@@ -73,14 +80,21 @@ The tool is designed to be gentle on your data plan (background:
 
 | Scenario | Behavior |
 |---|---|
-| ChatGPT/Codex window visible | One lightweight read every `RefreshSeconds` (default 60s) |
+| ChatGPT/Codex in the foreground | One lightweight read every `ForegroundRefreshSeconds` (default 30s) |
+| Window visible in the background | One read every `RefreshSeconds` (default 60s) |
 | Window minimized / tray-only | Cadence drops to `MinimizedRefreshSeconds` (default 300s) |
 | Reset-credit query | One read-only request every `ResetCreditsSeconds` (default 30 min) |
 
 The app-server process stays alive and is reused for the whole session;
-periodic refreshes send `account/rateLimits/read` requests and merge
-`account/rateLimits/updated` push notifications instead of restarting it on
-every poll. The app-server may also make its own background requests, so total
+periodic refreshes check the local account with `account/read` (`refreshToken: false`),
+then send `account/rateLimits/read` and merge `account/rateLimits/updated` notifications
+from the monitor's own connection. Returning to the foreground, restoring the
+window, or waking the computer schedules one supplemental read after a one-second
+debounce. Concurrent refreshes merge; reads time out after 30 seconds and failed
+reads back off to at most five minutes. Identical quotas do not trigger restarts.
+Tooltips show the last confirmed update time; account changes clear old data.
+This reduces polling delay without guaranteeing synchronization with the desktop
+GUI's separately cached data. The app-server may also make background requests, so total
 process traffic can exceed the traffic from rate-limit reads alone.
 
 If the app-server reports a revoked token, the monitor clears the stale usage
@@ -113,6 +127,13 @@ anywhere else. Redacted diagnostic logs live under
 `%LOCALAPPDATA%\CodexRateMonitor\logs` and never contain tokens or account
 identifiers. Private vulnerabilities: [SECURITY.md](SECURITY.md).
 
+Diagnostics are off by default. To investigate a mismatch, set `DiagnosticsEnabled`
+to `true` in `settings.json` and restart the monitor. Logs retain seven days,
+rotate at about 2 MiB per file, and share a 20 MiB disk budget. Expired logs are
+cleaned even when diagnostics are disabled, while the monitor is running.
+Refresh origins, elapsed times and notification dispositions are documented in
+[usage refresh diagnostics](docs/usage-refresh.md).
+
 ## Configuration
 
 Common `settings.json` fields (template in `config/settings.default.json`):
@@ -122,14 +143,21 @@ Common `settings.json` fields (template in `config/settings.default.json`):
 | `Language` | `auto` / `zh-CN` / `zh-TW` / `en` |
 | `OverlayMode` | `desktop` (default, floating) / `attach` |
 | `UsageDisplay` | `remaining` (default) / `used` |
-| `RefreshSeconds` | 30鈥?00, cadence while the window is visible (default 60) |
+| `ForegroundRefreshSeconds` | 30 to `RefreshSeconds`, foreground interval (default 30) |
+| `RefreshSeconds` | 30 to 900, interval while visible in the background (default 60) |
 | `MinimizedRefreshSeconds` | 60鈥?600, cadence while minimized (default 300) |
 | `ShowResetCredits` | Reset-credit badge toggle (default on) |
 | `ResetCreditsSeconds` | 300鈥?6400, reset-credit query interval (default 1800) |
-| `DiagnosticsEnabled` / `DiagnosticRetentionDays` | Diagnostic log toggle and retention |
+| `DiagnosticsEnabled` / `DiagnosticRetentionDays` | Diagnostics default off; retention defaults to 7 days (1–30), total budget 20 MiB |
 
 Appearance fields (fonts, `#RRGGBB` colors, scale, opacity) are documented in
 the default template and editable in the settings UI.
+
+Overlay scale is 50–200%, with 100% using the compact size that was previously
+85%. Existing unversioned settings are converted once in memory to preserve
+their rendered size: old 85% becomes new 100%, and old 100% becomes about 117.65%.
+The updater keeps existing `settings.json`; saving records `Style.ScaleBasisVersion: 2`
+so subsequent loads do not convert again. Other preferences remain in place.
 
 ## Build and release
 

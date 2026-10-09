@@ -9,7 +9,7 @@ using System.Windows.Forms;
 
 namespace CodexRateMonitorNative
 {
-    internal sealed class AppearanceSettingsForm : Form
+    internal sealed class AppearanceSettingsForm : DpiAwareDialog
     {
         private readonly Action<MonitorSettings> onPreview;
         private readonly Action<MonitorSettings> onSave;
@@ -36,6 +36,7 @@ namespace CodexRateMonitorNative
         private readonly NumericUpDown fontSize;
         private readonly NumericUpDown resetFontSize;
         private readonly NumericUpDown scale;
+        private decimal lastScaleInput;
         private readonly NumericUpDown opacity;
         private readonly NumericUpDown cornerRadius;
 
@@ -50,6 +51,8 @@ namespace CodexRateMonitorNative
             onSave = saveCallback;
             onCancel = cancelCallback;
 
+            // Capture the complete logical layout before applying monitor DPI.
+            SuspendLayout();
             Text = I18n.T("SettingsTitle");
             Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application;
             StartPosition = FormStartPosition.CenterScreen;
@@ -57,34 +60,33 @@ namespace CodexRateMonitorNative
             MaximizeBox = false;
             MinimizeBox = false;
             ShowInTaskbar = true;
-            AutoScaleMode = AutoScaleMode.None;
-            ClientSize = new Size(820, 950);
-            MinimumSize = new Size(760, 900);
             Font = CreateUiFont(9.5f);
+            ClientSize = new Size(820, 760);
             BackColor = Color.FromArgb(246, 247, 249);
 
+            var content = new Panel();
+            content.Dock = DockStyle.Fill;
+            content.AutoScroll = true;
+            Controls.Add(content);
+
             var root = new TableLayoutPanel();
-            root.Dock = DockStyle.Fill;
-            root.AutoScroll = false;
-            root.Padding = new Padding(20, 16, 20, 14);
+            // A top-docked child is excluded from horizontal AutoScroll in
+            // WinForms. Keep explicit bounds so narrow screens can scroll too.
+            root.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+            root.MinimumSize = new Size(640, 0);
+            root.Padding = new Padding(20, 16, 20, 8);
             root.ColumnCount = 1;
-            root.RowCount = 9;
+            root.RowCount = 8;
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));   // 0 header
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 140));  // 1 preview
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));   // 2 display mode (full width)
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));   // 3 display position + display lines (side-by-side)
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));   // 4 progress + language (side-by-side)
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 188));  // 5 typography
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 176));  // 6 colors
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));   // 7 hint
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));   // 8 buttons
-            Controls.Add(root);
+            for (int row = 0; row < 8; row++)
+                root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            content.Controls.Add(root);
 
             root.Controls.Add(BuildHeader(), 0, 0);
 
             preview = new OverlayPreviewControl();
             preview.Dock = DockStyle.Fill;
+            preview.AutoSize = true;
             preview.Margin = new Padding(0, 0, 0, 12);
             root.Controls.Add(preview, 0, 1);
 
@@ -135,9 +137,11 @@ namespace CodexRateMonitorNative
 
             // ---- Display mode: occupies its own full-width row on row 2. ----
             var modeGroup = CreateGroup(I18n.T("DisplayMode"));
-            var modePanel = new FlowLayoutPanel();
-            modePanel.Dock = DockStyle.Fill;
-            modePanel.WrapContents = false;
+            var modePanel = new SettingsFlowPanel();
+            modePanel.Dock = DockStyle.Top;
+            modePanel.AutoSize = true;
+            modePanel.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            modePanel.WrapContents = true;
             modePanel.Padding = new Padding(4, 6, 4, 4);
             desktopModeRadio = new RadioButton();
             desktopModeRadio.Text = I18n.T("DesktopFloatingMode");
@@ -163,10 +167,11 @@ namespace CodexRateMonitorNative
             // ---- Display position + Display lines: side-by-side on row 3 using two
             // distinct GroupBox containers (no divider line). When desktop floating
             // mode is selected, the position column collapses to 0% and the lines
-            // group expands to fill the full row, so the row height stays fixed and
-            // nothing gets clipped.
+            // group expands to fill the full row and determines its content height.
             positionLinesRow = new TableLayoutPanel();
-            positionLinesRow.Dock = DockStyle.Fill;
+            positionLinesRow.Dock = DockStyle.Top;
+            positionLinesRow.AutoSize = true;
+            positionLinesRow.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             // Outer margin is zero by design: the inner GroupBoxes already carry
             // their own 10px bottom margin, and stacking another 10px here would
             // squeeze the radio buttons again.
@@ -175,12 +180,14 @@ namespace CodexRateMonitorNative
             positionLinesRow.RowCount = 1;
             positionLinesRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             positionLinesRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            positionLinesRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            positionLinesRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             positionGroup = CreateGroup(I18n.T("DisplayPosition"));
-            var positionPanel = new FlowLayoutPanel();
-            positionPanel.Dock = DockStyle.Fill;
-            positionPanel.WrapContents = false;
+            var positionPanel = new SettingsFlowPanel();
+            positionPanel.Dock = DockStyle.Top;
+            positionPanel.AutoSize = true;
+            positionPanel.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            positionPanel.WrapContents = true;
             positionPanel.Padding = new Padding(4, 6, 4, 4);
             positionPanel.Controls.Add(topPosition);
             positionPanel.Controls.Add(bottomPosition);
@@ -188,9 +195,11 @@ namespace CodexRateMonitorNative
             positionLinesRow.Controls.Add(positionGroup, 0, 0);
 
             var linesGroup = CreateGroup(I18n.T("DisplayLines"));
-            var linesPanel = new FlowLayoutPanel();
-            linesPanel.Dock = DockStyle.Fill;
-            linesPanel.WrapContents = false;
+            var linesPanel = new SettingsFlowPanel();
+            linesPanel.Dock = DockStyle.Top;
+            linesPanel.AutoSize = true;
+            linesPanel.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            linesPanel.WrapContents = true;
             linesPanel.Padding = new Padding(4, 6, 4, 4);
             linesPanel.Controls.Add(oneLineRadio);
             linesPanel.Controls.Add(twoLinesRadio);
@@ -201,7 +210,9 @@ namespace CodexRateMonitorNative
 
             // ---- Progress display + Language: side-by-side in a single row ----
             var progressLangRow = new TableLayoutPanel();
-            progressLangRow.Dock = DockStyle.Fill;
+            progressLangRow.Dock = DockStyle.Top;
+            progressLangRow.AutoSize = true;
+            progressLangRow.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             // Outer margin must be zero here, otherwise it stacks on top of the
             // GroupBox children's own 10px bottom margin and squeezes the radios.
             progressLangRow.Margin = Padding.Empty;
@@ -209,12 +220,14 @@ namespace CodexRateMonitorNative
             progressLangRow.RowCount = 1;
             progressLangRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             progressLangRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            progressLangRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            progressLangRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             var progressGroup = CreateGroup(I18n.T("ProgressDisplay"));
-            var progressPanel = new FlowLayoutPanel();
-            progressPanel.Dock = DockStyle.Fill;
-            progressPanel.WrapContents = false;
+            var progressPanel = new SettingsFlowPanel();
+            progressPanel.Dock = DockStyle.Top;
+            progressPanel.AutoSize = true;
+            progressPanel.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            progressPanel.WrapContents = true;
             progressPanel.Padding = new Padding(4, 6, 4, 4);
             progressPanel.Controls.Add(showRemaining);
             progressPanel.Controls.Add(showUsed);
@@ -222,9 +235,11 @@ namespace CodexRateMonitorNative
             progressLangRow.Controls.Add(progressGroup, 0, 0);
 
             var languageGroup = CreateGroup(I18n.T("Language"));
-            var languagePanel = new FlowLayoutPanel();
-            languagePanel.Dock = DockStyle.Fill;
-            languagePanel.WrapContents = false;
+            var languagePanel = new SettingsFlowPanel();
+            languagePanel.Dock = DockStyle.Top;
+            languagePanel.AutoSize = true;
+            languagePanel.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            languagePanel.WrapContents = true;
             languagePanel.Padding = new Padding(4, 6, 4, 4);
             languagePanel.Controls.Add(language);
             languageGroup.Controls.Add(languagePanel);
@@ -276,11 +291,14 @@ namespace CodexRateMonitorNative
 
             fontSize = CreateNumber(10, 22, 1, 0);
             resetFontSize = CreateNumber(9, 18, 1, 0);
-            scale = CreateNumber(75, 150, 5, 0);
+            scale = CreateNumber((decimal)(StyleSettings.MinimumScale * 100),
+                (decimal)(StyleSettings.MaximumScale * 100), 1, 2);
             opacity = CreateNumber(50, 100, 5, 0);
             cornerRadius = CreateNumber(0, 20, 1, 0);
 
             var typographyGroup = CreateGroup(I18n.T("Typography"));
+            typographyGroup.AutoSize = true;
+            typographyGroup.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             typographyGroup.Controls.Add(BuildTypographyTable());
             root.Controls.Add(typographyGroup, 0, 5);
 
@@ -289,13 +307,21 @@ namespace CodexRateMonitorNative
             root.Controls.Add(colorsGroup, 0, 6);
 
             var hint = new Label();
-            hint.Dock = DockStyle.Fill;
+            hint.Dock = DockStyle.Top;
+            hint.AutoSize = true;
+            hint.Margin = new Padding(0, 0, 0, 8);
             hint.TextAlign = ContentAlignment.MiddleLeft;
             hint.ForeColor = Color.FromArgb(103, 112, 123);
             hint.Text = I18n.T("SettingsHint");
             root.Controls.Add(hint, 0, 7);
 
-            root.Controls.Add(BuildButtons(), 0, 8);
+            // Keep actions visible even when the scaled content needs scrolling.
+            var footer = new Panel();
+            footer.Dock = DockStyle.Bottom;
+            footer.Height = 66;
+            footer.Padding = new Padding(20, 0, 20, 14);
+            footer.Controls.Add(BuildButtons());
+            Controls.Add(footer);
 
             LoadControls();
             FormClosed += delegate
@@ -303,20 +329,75 @@ namespace CodexRateMonitorNative
                 if (!committed && onCancel != null)
                     onCancel();
             };
+            InitializeDpiLayout(new Size(820, 760));
+            ResumeLayout(true);
+            content.ClientSizeChanged += delegate { LayoutContent(content, root); };
+            root.Layout += delegate { LayoutContent(content, root); };
+            LayoutContent(content, root);
+        }
+
+        private static void LayoutContent(Panel content, TableLayoutPanel root)
+        {
+            root.Width = Math.Max(root.MinimumSize.Width, content.ClientSize.Width);
+            int preferred = root.GetPreferredSize(new Size(root.Width, 0)).Height;
+            int contentBottom = root.Controls.Cast<Control>().Max(delegate(Control control)
+            {
+                return control.Bottom + control.Margin.Bottom;
+            });
+            root.Height = Math.Max(preferred, contentBottom + root.Padding.Bottom);
+        }
+
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            FitToWorkingArea(Screen.FromControl(this).WorkingArea);
+        }
+
+        public void SetPreviewDpi(int dpi)
+        {
+            preview.TargetDpi = dpi;
+        }
+
+        protected override void OnDpiLayoutChanged()
+        {
+            FitToWorkingArea(Screen.FromControl(this).WorkingArea);
+        }
+
+        private void FitToWorkingArea(Rectangle workingArea)
+        {
+            int margin = (int)Math.Ceiling(12d * LayoutDpi / 96d);
+            Rectangle available = Rectangle.Inflate(workingArea, -margin, -margin);
+            var content = Controls.OfType<Panel>().Single(delegate(Panel panel) { return panel.AutoScroll; });
+            var footer = Controls.OfType<Panel>().Single(delegate(Panel panel) { return panel.Dock == DockStyle.Bottom; });
+            var root = (TableLayoutPanel)content.Controls[0];
+            MaximumSize = Size.Empty;
+            int preferredWidth = (int)Math.Round(820d * LayoutDpi / 96d);
+            Width = Math.Min(preferredWidth + Width - ClientSize.Width, available.Width);
+            LayoutContent(content, root);
+            int preferredHeight = root.Height + footer.Height + Height - ClientSize.Height;
+            MaximumSize = available.Size;
+            Size = new Size(Width, Math.Min(preferredHeight, available.Height));
+            Location = new Point(
+                available.Left + (available.Width - Width) / 2,
+                available.Top + (available.Height - Height) / 2);
         }
 
         private Control BuildHeader()
         {
             var panel = new TableLayoutPanel();
-            panel.Dock = DockStyle.Fill;
+            panel.Dock = DockStyle.Top;
+            panel.AutoSize = true;
+            panel.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            panel.Margin = new Padding(0, 0, 0, 8);
             panel.ColumnCount = 1;
             panel.RowCount = 2;
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             var title = new Label();
             title.Dock = DockStyle.Fill;
+            title.AutoSize = true;
             title.Margin = new Padding(0);
             title.Font = CreateUiFont(15f, FontStyle.Bold);
             title.ForeColor = Color.FromArgb(28, 31, 36);
@@ -326,6 +407,7 @@ namespace CodexRateMonitorNative
 
             var subtitle = new Label();
             subtitle.Dock = DockStyle.Fill;
+            subtitle.AutoSize = true;
             subtitle.Margin = new Padding(1, 3, 0, 0);
             subtitle.ForeColor = Color.FromArgb(103, 112, 123);
             subtitle.Text = I18n.T("AppearanceSubtitle");
@@ -336,11 +418,13 @@ namespace CodexRateMonitorNative
 
         private GroupBox CreateGroup(string title)
         {
-            var group = new GroupBox();
+            var group = new SettingsGroupBox();
             group.Text = title;
-            group.Dock = DockStyle.Fill;
-            group.Margin = new Padding(0, 0, 0, 14);
-            group.Padding = new Padding(10, 8, 10, 8);
+            group.Dock = DockStyle.Top;
+            group.AutoSize = true;
+            group.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            group.Margin = new Padding(0, 0, 0, 10);
+            group.Padding = new Padding(10, 4, 10, 6);
             group.ForeColor = Color.FromArgb(42, 46, 52);
             return group;
         }
@@ -348,11 +432,15 @@ namespace CodexRateMonitorNative
         private NumericUpDown CreateNumber(decimal min, decimal max, decimal increment, int decimals)
         {
             var control = new NumericUpDown();
+            // The dialog applies this composite control's logical dimensions;
+            // inherited autoscaling must not multiply them a second time.
+            control.AutoScaleMode = AutoScaleMode.None;
             control.Minimum = min;
             control.Maximum = max;
             control.Increment = increment;
             control.DecimalPlaces = decimals;
             control.Width = 82;
+            control.Margin = Padding.Empty;
             control.TextAlign = HorizontalAlignment.Right;
             control.ValueChanged += ControlChanged;
             return control;
@@ -361,7 +449,9 @@ namespace CodexRateMonitorNative
         private Control BuildTypographyTable()
         {
             var table = new TableLayoutPanel();
-            table.Dock = DockStyle.Fill;
+            table.Dock = DockStyle.Top;
+            table.AutoSize = true;
+            table.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             table.Padding = new Padding(4, 4, 4, 2);
             table.ColumnCount = 4;
             table.RowCount = 4;
@@ -370,9 +460,10 @@ namespace CodexRateMonitorNative
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             for (int i = 0; i < 4; i++)
-                table.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+                table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             AddField(table, 0, 0, I18n.T("Font"), fontFamily);
+            table.SetColumnSpan(table.GetControlFromPosition(1, 0), 3);
             AddField(table, 0, 1, I18n.T("MainFontSize"), fontSize);
             AddField(table, 2, 1, I18n.T("TimeFontSize"), resetFontSize);
             AddField(table, 0, 2, I18n.T("Scale"), scale, "%");
@@ -391,12 +482,15 @@ namespace CodexRateMonitorNative
         {
             var label = new Label();
             label.Text = labelText;
+            label.AutoSize = true;
             label.TextAlign = ContentAlignment.MiddleRight;
             label.Dock = DockStyle.Fill;
             table.Controls.Add(label, column, row);
 
-            var panel = new FlowLayoutPanel();
+            var panel = new SettingsFlowPanel();
             panel.Dock = DockStyle.Fill;
+            panel.AutoSize = true;
+            panel.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             panel.WrapContents = false;
             panel.Margin = new Padding(4, 3, 4, 2);
             panel.Controls.Add(control);
@@ -424,19 +518,27 @@ namespace CodexRateMonitorNative
 
         private Control BuildColorsPanel()
         {
-            var container = new Panel();
-            container.Dock = DockStyle.Fill;
+            var container = new TableLayoutPanel();
+            container.Dock = DockStyle.Top;
+            container.AutoSize = true;
+            container.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            container.ColumnCount = 1;
+            container.RowCount = 2;
+            container.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            container.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            container.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             var grid = new TableLayoutPanel();
             grid.Dock = DockStyle.Top;
-            grid.Height = 84;
+            grid.AutoSize = true;
+            grid.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             grid.Padding = new Padding(4, 4, 4, 0);
             grid.ColumnCount = 5;
             grid.RowCount = 2;
             for (int i = 0; i < 5; i++)
                 grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
-            grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-            grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+            grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             AddColorPicker(grid, 0, 0, I18n.T("OuterBackground"), "Background");
             AddColorPicker(grid, 1, 0, I18n.T("RowBackground"), "CardBackground");
@@ -448,11 +550,41 @@ namespace CodexRateMonitorNative
             AddColorPicker(grid, 2, 1, I18n.T("SevenDayColor"), "Secondary");
             AddColorPicker(grid, 3, 1, I18n.T("Warning"), "Warning");
             AddColorPicker(grid, 4, 1, I18n.T("Danger"), "Danger");
-            container.Controls.Add(grid);
+            bool arranging = false;
+            grid.Layout += delegate
+            {
+                if (arranging || grid.ClientSize.Width <= 0) return;
+                Control[] pickers = grid.Controls.Cast<Control>().ToArray();
+                int cellWidth = pickers.Max(delegate(Control picker)
+                {
+                    return picker.GetPreferredSize(Size.Empty).Width + picker.Margin.Horizontal;
+                });
+                int columns = Math.Max(1, Math.Min(5,
+                    (grid.ClientSize.Width - grid.Padding.Horizontal) / Math.Max(1, cellWidth)));
+                if (grid.ColumnCount == columns) return;
+                arranging = true;
+                try
+                {
+                    grid.SuspendLayout();
+                    grid.ColumnCount = columns;
+                    grid.RowCount = (pickers.Length + columns - 1) / columns;
+                    grid.ColumnStyles.Clear();
+                    grid.RowStyles.Clear();
+                    for (int column = 0; column < columns; column++)
+                        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / columns));
+                    for (int row = 0; row < grid.RowCount; row++)
+                        grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                    for (int item = 0; item < pickers.Length; item++)
+                        grid.SetCellPosition(pickers[item], new TableLayoutPanelCellPosition(item % columns, item / columns));
+                }
+                finally { grid.ResumeLayout(true); arranging = false; }
+            };
+            container.Controls.Add(grid, 0, 0);
 
-            var presets = new FlowLayoutPanel();
-            presets.Dock = DockStyle.Bottom;
-            presets.Height = 32;
+            var presets = new SettingsFlowPanel();
+            presets.Dock = DockStyle.Top;
+            presets.AutoSize = true;
+            presets.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             presets.FlowDirection = FlowDirection.RightToLeft;
             presets.WrapContents = false;
             var dark = CreateSecondaryButton(I18n.T("DarkPreset"));
@@ -461,7 +593,7 @@ namespace CodexRateMonitorNative
             var light = CreateSecondaryButton(I18n.T("LightPreset"));
             light.Click += delegate { ApplyPreset(false); };
             presets.Controls.Add(light);
-            container.Controls.Add(presets);
+            container.Controls.Add(presets, 0, 1);
             return container;
         }
 
@@ -472,8 +604,10 @@ namespace CodexRateMonitorNative
             string label,
             string property)
         {
-            var panel = new FlowLayoutPanel();
+            var panel = new SettingsFlowPanel();
             panel.Dock = DockStyle.Fill;
+            panel.AutoSize = true;
+            panel.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             panel.WrapContents = false;
             panel.Margin = new Padding(2);
 
@@ -496,7 +630,7 @@ namespace CodexRateMonitorNative
 
         private Control BuildButtons()
         {
-            var panel = new FlowLayoutPanel();
+            var panel = new SettingsFlowPanel();
             panel.Dock = DockStyle.Fill;
             panel.FlowDirection = FlowDirection.RightToLeft;
             panel.WrapContents = false;
@@ -504,6 +638,8 @@ namespace CodexRateMonitorNative
             var save = new Button();
             save.Text = I18n.T("SaveClose");
             save.AutoSize = true;
+            save.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            save.MinimumSize = new Size(75, 32);
             save.Height = 32;
             save.Padding = new Padding(12, 0, 12, 0);
             save.BackColor = Color.FromArgb(38, 38, 38);
@@ -539,6 +675,8 @@ namespace CodexRateMonitorNative
             var button = new Button();
             button.Text = text;
             button.AutoSize = true;
+            button.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            button.MinimumSize = new Size(75, 32);
             button.Height = 32;
             button.Padding = new Padding(8, 0, 8, 0);
             button.FlatStyle = FlatStyle.Flat;
@@ -575,7 +713,8 @@ namespace CodexRateMonitorNative
                 fontFamily.Text = working.Style.FontFamily;
                 fontSize.Value = ClampDecimal((decimal)working.Style.FontSize, fontSize);
                 resetFontSize.Value = ClampDecimal((decimal)working.Style.ResetFontSize, resetFontSize);
-                scale.Value = ClampDecimal((decimal)(working.Style.Scale * 100), scale);
+                scale.Value = ClampDecimal(Math.Round((decimal)(working.Style.Scale * 100), 2), scale);
+                lastScaleInput = scale.Value;
                 opacity.Value = ClampDecimal((decimal)(working.Style.Opacity * 100), opacity);
                 cornerRadius.Value = ClampDecimal((decimal)working.Style.CornerRadius, cornerRadius);
                 foreach (KeyValuePair<string, Button> item in colorButtons)
@@ -606,7 +745,7 @@ namespace CodexRateMonitorNative
         // The display-position option only applies to window-attach mode. When the
         // desktop floating mode is selected, hide the position group and collapse
         // its column to 0% so the display-lines group expands to fill the whole
-        // row. The row itself keeps its fixed height, so nothing gets clipped.
+        // row. The row follows the visible group's preferred height.
         private void UpdatePositionGroupVisibility()
         {
             bool attach = attachModeRadio != null && attachModeRadio.Checked;
@@ -642,7 +781,13 @@ namespace CodexRateMonitorNative
                 : fontFamily.Text.Trim();
             working.Style.FontSize = (double)fontSize.Value;
             working.Style.ResetFontSize = (double)resetFontSize.Value;
-            working.Style.Scale = (double)scale.Value / 100.0;
+            // The displayed percentage may be rounded after legacy migration.
+            // Preserve its exact scale unless the user actually edits this input.
+            if (scale.Value != lastScaleInput)
+            {
+                working.Style.Scale = (double)scale.Value / 100.0;
+                lastScaleInput = scale.Value;
+            }
             working.Style.Opacity = (double)opacity.Value / 100.0;
             working.Style.CornerRadius = (double)cornerRadius.Value;
         }
@@ -760,215 +905,154 @@ namespace CodexRateMonitorNative
         {
             try
             {
-                return new Font("Microsoft YaHei UI", size, style, GraphicsUnit.Point);
+                return new Font("Microsoft YaHei UI", size * 96f / 72f, style, GraphicsUnit.Pixel);
             }
             catch
             {
-                return new Font(SystemFonts.MessageBoxFont.FontFamily, size, style, GraphicsUnit.Point);
+                return new Font(SystemFonts.MessageBoxFont.FontFamily, size * 96f / 72f, style, GraphicsUnit.Pixel);
             }
+        }
+    }
+
+    internal sealed class SettingsGroupBox : GroupBox
+    {
+        public override Size GetPreferredSize(Size proposedSize)
+        {
+            Size preferred = base.GetPreferredSize(proposedSize);
+            int width = Width > 1 ? Width : proposedSize.Width;
+            int innerWidth = Math.Max(1, width - Padding.Horizontal);
+            int height = 0;
+            foreach (Control control in Controls)
+            {
+                if (control.Visible)
+                    height = Math.Max(height,
+                        control.GetPreferredSize(new Size(innerWidth, 0)).Height + control.Margin.Vertical);
+            }
+            // Measure wrapped children at the group's available width, rather
+            // than the unbounded width used by GroupBox's default autosizing.
+            preferred.Height = DisplayRectangle.Top + height + Padding.Bottom;
+            return preferred;
+        }
+    }
+
+    internal sealed class SettingsFlowPanel : FlowLayoutPanel
+    {
+        public override Size GetPreferredSize(Size proposedSize)
+        {
+            Size preferred = base.GetPreferredSize(proposedSize);
+            // Native edit controls can round their actual height above the
+            // preferred height during a DPI/font change. Reserve that difference.
+            int rowHeight = 0;
+            foreach (Control control in Controls)
+            {
+                if (control.Visible)
+                    rowHeight = Math.Max(rowHeight, control.Height + control.Margin.Vertical);
+            }
+            preferred.Height = Math.Max(preferred.Height, Padding.Vertical + rowHeight);
+            return preferred;
         }
     }
 
     internal sealed class OverlayPreviewControl : Control
     {
         private MonitorSettings settings = new MonitorSettings();
+        private int targetDpi;
+        private readonly RateSnapshot sample = new RateSnapshot
+        {
+            Primary = new WindowUsage { UsedPercent = 35,
+                ResetsAt = new DateTimeOffset(DateTime.Today.AddDays(1).AddHours(3).AddMinutes(25)).ToUnixTimeSeconds() },
+            Secondary = new WindowUsage { UsedPercent = 5,
+                ResetsAt = new DateTimeOffset(DateTime.Today.AddDays(7).AddHours(22).AddMinutes(25)).ToUnixTimeSeconds() }
+        };
+        private readonly ResetCreditsInfo sampleCredits = new ResetCreditsInfo
+        {
+            AvailableCount = 2,
+            EarliestExpiry = DateTime.Today.AddDays(5),
+            EarliestGranted = DateTime.Today.AddDays(-20)
+        };
 
         public OverlayPreviewControl()
         {
             DoubleBuffered = true;
             BackColor = Color.FromArgb(236, 239, 243);
-            SetStyle(ControlStyles.AllPaintingInWmPaint |
-                     ControlStyles.UserPaint |
-                     ControlStyles.OptimizedDoubleBuffer, true);
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint |
+                ControlStyles.OptimizedDoubleBuffer, true);
         }
 
         public MonitorSettings Settings
         {
             get { return settings; }
+            set { settings = value ?? new MonitorSettings(); RefreshLayout(); }
+        }
+
+        // Use the overlay's monitor DPI even when settings are on another screen.
+        public int TargetDpi
+        {
+            get { return targetDpi > 0 ? targetDpi : DeviceDpi; }
             set
             {
-                settings = value ?? new MonitorSettings();
-                Invalidate();
+                if (targetDpi == value) return;
+                targetDpi = value;
+                RefreshLayout();
             }
+        }
+
+        private void RefreshLayout()
+        {
+            if (Parent != null) Parent.PerformLayout();
+            Invalidate();
+        }
+
+        public override Size GetPreferredSize(Size proposedSize)
+        {
+            Size overlay = OverlayRenderer.GetPixelSize(settings, settings.ShowResetCredits, TargetDpi);
+            int padding = (int)Math.Ceiling(12d * DeviceDpi / 96d);
+            int width = proposedSize.Width > 0 ? proposedSize.Width : overlay.Width + padding * 2;
+            float fit = Math.Min(1f, Math.Max(1, width - padding * 2) / (float)overlay.Width);
+            return new Size(width, Font.Height + padding * 3 + (int)Math.Ceiling(overlay.Height * fit));
+        }
+
+        public Rectangle GetOverlayBounds()
+        {
+            Size overlay = OverlayRenderer.GetPixelSize(settings, settings.ShowResetCredits, TargetDpi);
+            int padding = (int)Math.Ceiling(12d * DeviceDpi / 96d);
+            int top = Font.Height + padding * 2;
+            float fit = Math.Min(1f, Math.Min(
+                Math.Max(1, Width - padding * 2) / (float)overlay.Width,
+                Math.Max(1, Height - top - padding) / (float)overlay.Height));
+            Size rendered = new Size(Math.Max(1, (int)Math.Round(overlay.Width * fit)),
+                Math.Max(1, (int)Math.Round(overlay.Height * fit)));
+            return new Rectangle((Width - rendered.Width) / 2,
+                top + Math.Max(0, (Height - top - padding - rendered.Height) / 2),
+                rendered.Width, rendered.Height);
         }
 
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
-            Graphics g = e.Graphics;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
-
-            int creditsWidthExtra = settings.ShowResetCredits
-                ? (DrawingHelpers.TopWidthWithCredits - 470)
-                : 0;
-            int baseWidth = settings.DisplayLines == "2"
-                ? DrawingHelpers.BottomRightWidth
-                : 470 + creditsWidthExtra;
-            int baseHeight = settings.DisplayLines == "2"
-                ? (settings.ShowResetCredits
-                    ? DrawingHelpers.BottomRightHeightWithCredits
-                    : DrawingHelpers.BottomRightHeight)
-                : 40;
-            float fit = Math.Min(
-                (ClientSize.Width - 28f) / baseWidth,
-                (ClientSize.Height - 30f) / baseHeight);
-            fit = Math.Min(fit, 1.35f);
-            float x = (ClientSize.Width - baseWidth * fit) / 2f;
-            float y = (ClientSize.Height - baseHeight * fit) / 2f + 6f;
-
-            g.TranslateTransform(x, y);
-            g.ScaleTransform(fit, fit);
-            DrawOverlay(g, baseWidth, baseHeight);
-            g.ResetTransform();
-
-            using (var font = new Font("Microsoft JhengHei UI", 8.5f, FontStyle.Regular))
+            Size pixels = OverlayRenderer.GetPixelSize(settings, settings.ShowResetCredits, TargetDpi);
+            Rectangle bounds = GetOverlayBounds();
+            using (Bitmap bitmap = OverlayRenderer.CreateBitmap(settings, sample,
+                settings.ShowResetCredits ? sampleCredits : null, null, TargetDpi))
+            {
+                // The real window applies opacity through the compositor. Show
+                // the same transparency against this preview's background.
+                using (var attributes = new System.Drawing.Imaging.ImageAttributes())
+                {
+                    var matrix = new System.Drawing.Imaging.ColorMatrix();
+                    matrix.Matrix33 = (float)settings.Style.Opacity;
+                    attributes.SetColorMatrix(matrix);
+                    e.Graphics.DrawImage(bitmap, bounds, 0, 0, pixels.Width, pixels.Height,
+                        GraphicsUnit.Pixel, attributes);
+                }
+            }
+            int percent = (int)Math.Round(bounds.Width * 100d / pixels.Width);
+            string size = percent >= 100 ? "1:1" : string.Format(CultureInfo.CurrentCulture,
+                I18n.Translate("PreviewReduced", settings.Language), percent);
+            string caption = I18n.Translate("LivePreview", settings.Language) + " · " +
+                I18n.Translate("PreviewSample", settings.Language) + " · " + size;
             using (var brush = new SolidBrush(Color.FromArgb(103, 112, 123)))
-                g.DrawString(I18n.Translate("LivePreview", settings.Language), font, brush, 8, 6);
-        }
-
-        private void DrawOverlay(Graphics g, int width, int height)
-        {
-            StyleSettings style = settings.Style;
-            Color outer = ColorTools.Parse(style.Background);
-            Color border = ColorTools.Parse(style.Border);
-            Color card = ColorTools.Parse(style.CardBackground);
-
-            using (var brush = new SolidBrush(outer))
-            using (var pen = new Pen(border, 1f))
-            using (GraphicsPath path = DrawingHelpers.RoundRect(
-                new RectangleF(0.5f, 0.5f, width - 1f, height - 1f),
-                (float)style.CornerRadius))
-            {
-                g.FillPath(brush, path);
-                g.DrawPath(pen, path);
-            }
-
-            DateTime fiveReset = DateTime.Today.AddDays(1).AddHours(3).AddMinutes(25);
-            DateTime sevenReset = DateTime.Today.AddDays(7).AddHours(22).AddMinutes(25);
-            if (settings.DisplayLines == "2")
-            {
-                DrawRow(g, DrawingHelpers.GetBottomRightCardBounds(true),
-                    I18n.Translate("FiveHour", settings.Language), 35f,
-                    FormatReset(fiveReset), card, true);
-                DrawRow(g, DrawingHelpers.GetBottomRightCardBounds(false),
-                    I18n.Translate("SevenDay", settings.Language), 5f,
-                    FormatReset(sevenReset), card, false);
-                if (settings.ShowResetCredits)
-                    DrawCreditsPreview(g, DrawingHelpers.GetCreditsRowBounds(), card);
-            }
-            else
-            {
-                DrawRow(g, new RectangleF(5, 5, 228, 30),
-                    I18n.Translate("FiveHour", settings.Language), 35f,
-                    FormatReset(fiveReset), card, true);
-                DrawRow(g, new RectangleF(237, 5, 228, 30),
-                    I18n.Translate("SevenDay", settings.Language), 5f,
-                    FormatReset(sevenReset), card, false);
-                if (settings.ShowResetCredits)
-                    DrawCreditsPreview(g, new RectangleF(469, 5, 148, 30), card);
-            }
-        }
-
-        // Static preview of the reset-credits card (sample data: two credits,
-        // earliest expiring in 5 days -> amber warning state).
-        private void DrawCreditsPreview(Graphics g, RectangleF bounds, Color card)
-        {
-            StyleSettings style = settings.Style;
-            Color deadline = ColorTools.Parse(style.Warning);
-            using (var brush = new SolidBrush(card))
-            using (GraphicsPath path = DrawingHelpers.RoundRect(
-                bounds, Math.Max(0, (float)style.CornerRadius - 3f)))
-                g.FillPath(brush, path);
-
-            FontFamily family;
-            try { family = new FontFamily(style.FontFamily); }
-            catch { family = SystemFonts.MessageBoxFont.FontFamily; }
-
-            string count = string.Format(
-                CultureInfo.CurrentCulture,
-                I18n.Translate("CreditsBadge", settings.Language), 2);
-            string expiry = string.Format(
-                CultureInfo.CurrentCulture,
-                I18n.Translate("CreditsExpire", settings.Language),
-                DateTime.Today.AddDays(5).ToString("MM-dd", CultureInfo.CurrentCulture));
-
-            float creditFontSize = (float)Math.Max(10, style.ResetFontSize);
-            using (family)
-            using (var main = new Font(family, creditFontSize, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (var small = new Font(family, creditFontSize, FontStyle.Regular, GraphicsUnit.Pixel))
-            using (var textBrush = new SolidBrush(deadline))
-            using (var deadlineBrush = new SolidBrush(deadline))
-            {
-                DrawingHelpers.DrawCreditsText(
-                    g, bounds, count, expiry, main, small, textBrush, deadlineBrush);
-            }
-
-            RectangleF track = new RectangleF(bounds.X + 7, bounds.Bottom - 4, bounds.Width - 14, 2);
-            using (var trackBrush = new SolidBrush(ColorTools.Parse(style.Track)))
-                g.FillRectangle(trackBrush, track);
-            using (var progressBrush = new SolidBrush(deadline))
-                g.FillRectangle(progressBrush,
-                    new RectangleF(track.X, track.Y, track.Width * 0.8f, track.Height));
-        }
-
-        private void DrawRow(
-            Graphics g,
-            RectangleF bounds,
-            string label,
-            float usedPercent,
-            string reset,
-            Color card,
-            bool primary)
-        {
-            StyleSettings style = settings.Style;
-            using (var brush = new SolidBrush(card))
-            using (GraphicsPath path = DrawingHelpers.RoundRect(
-                bounds, Math.Max(0, (float)style.CornerRadius - 3f)))
-                g.FillPath(brush, path);
-
-            FontFamily family;
-            try { family = new FontFamily(style.FontFamily); }
-            catch { family = SystemFonts.MessageBoxFont.FontFamily; }
-
-            double value = UsageDisplayTools.GetDisplayedPercent(
-                usedPercent, settings.UsageDisplay);
-            string percent = UsageDisplayTools.FormatPercent(value);
-            float mainSize = (float)style.FontSize;
-            float resetSize = (float)style.ResetFontSize;
-            using (family)
-            using (var main = new Font(family, mainSize, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (var resetFont = new Font(family, resetSize, FontStyle.Regular, GraphicsUnit.Pixel))
-            using (var textBrush = new SolidBrush(ColorTools.Parse(style.Text)))
-            using (var mutedBrush = new SolidBrush(ColorTools.Parse(style.MutedText)))
-            {
-                DrawingHelpers.DrawUsageText(
-                    g, bounds, label, percent, reset,
-                    main, resetFont, textBrush, mutedBrush);
-            }
-
-            RectangleF track = new RectangleF(bounds.X + 7, bounds.Bottom - 4, bounds.Width - 14, 2);
-            using (var trackBrush = new SolidBrush(ColorTools.Parse(style.Track)))
-                g.FillRectangle(trackBrush, track);
-            Color normal = ColorTools.Parse(primary ? style.Primary : style.Secondary);
-            Color progress = UsageDisplayTools.GetProgressColor(
-                value,
-                settings.UsageDisplay,
-                normal,
-                ColorTools.Parse(style.Warning),
-                ColorTools.Parse(style.Danger));
-            using (var progressBrush = new SolidBrush(progress))
-                g.FillRectangle(progressBrush,
-                    new RectangleF(
-                        track.X,
-                        track.Y,
-                        track.Width * (float)value / 100f,
-                        track.Height));
-        }
-
-        private string FormatReset(DateTime time)
-        {
-            return I18n.FormatDate(time, settings.Language);
+                e.Graphics.DrawString(caption, Font, brush, 8f * DeviceDpi / 96f, 6f * DeviceDpi / 96f);
         }
     }
 }

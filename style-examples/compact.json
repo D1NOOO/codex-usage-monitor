@@ -4,6 +4,7 @@
   "usageDisplay": "remaining",
   "refreshSeconds": 60,
   "style": {
+    "scaleBasisVersion": 2,
     "scale": 0.82,
     "opacity": 0.92,
     "cornerRadius": 6,
