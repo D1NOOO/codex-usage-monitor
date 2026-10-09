@@ -18,7 +18,9 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
+using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
@@ -35,6 +37,11 @@ internal static class UsageRefreshTest
     private static readonly object Sync = new object();
     private static Type loggerType;
     private static string logDirectory;
+    private const string UnicodePlan="plan-\u4e2d\u6587-\ud83d\ude80";
+    [DllImport("kernel32.dll")]
+    private static extern bool FreeConsole();
+    [DllImport("kernel32.dll")]
+    private static extern uint GetConsoleCP();
     private static void Check(bool ok, string name) {
         if (!ok) throw new Exception(name);
         assertions++;
@@ -47,9 +54,9 @@ internal static class UsageRefreshTest
     private static void Set(object target, string name, object value) { target.GetType().GetProperty(name).SetValue(target, value, null); }
     private static void Field(object target, string name, object value) { target.GetType().GetField(name, Fields).SetValue(target, value); }
     private static object Field(object target, string name) { return target.GetType().GetField(name, Fields).GetValue(target); }
-    private static void Wait(Func<bool> ready, string label) {
+    private static void Wait(Func<bool> ready, string label, int timeoutMs=5000) {
         Stopwatch clock = Stopwatch.StartNew();
-        while (clock.ElapsedMilliseconds < 5000) {
+        while (clock.ElapsedMilliseconds < timeoutMs) {
             lock (Sync) { if (ready()) return; }
             Thread.Sleep(10);
         }
@@ -64,8 +71,22 @@ internal static class UsageRefreshTest
     }
     [STAThread]
     private static void Main(string[] args) {
-        if (args.Length > 0 && args[0] == "--fake-server") { FakeServer(); return; }
+        if (args.Length > 0 && args[0] == "--fake-server") {
+            // The fixture uses UTF-8 streams independently of the CI console.
+            // StreamReader recognizes the preamble emitted by Framework's
+            // redirected stdin writer. No console code-page API is required.
+            Console.SetIn(new StreamReader(Console.OpenStandardInput(),new UTF8Encoding(false),true));
+            Console.SetOut(new StreamWriter(Console.OpenStandardOutput(),new UTF8Encoding(false)){AutoFlush=true});
+            FakeServer(); return;
+        }
         try {
+            if(args.Length>1 && args[1]=="--headless") {
+                FreeConsole();
+                Check(GetConsoleCP()==0,"desktop fixture has no attached console");
+                ProtocolTests(Assembly.LoadFrom(args[0]));
+                Console.WriteLine("Passed " + assertions + " headless protocol assertions.");
+                return;
+            }
             Assembly assembly = Assembly.LoadFrom(args[0]);
             logDirectory=Path.Combine(Path.GetDirectoryName(Application.ExecutablePath),"logs-"+Guid.NewGuid().ToString("N"));
             loggerType=assembly.GetType("CodexRateMonitorNative.DiagnosticLog",true);
@@ -81,6 +102,9 @@ internal static class UsageRefreshTest
             Console.WriteLine("Passed " + assertions + " usage refresh assertions.");
         } catch (Exception ex) {
             Console.Error.WriteLine("FAIL " + ex);
+            if(logDirectory!=null && Directory.Exists(logDirectory))
+                foreach(string file in Directory.GetFiles(logDirectory,"usage-*.log"))
+                    Console.Error.WriteLine(File.ReadAllText(file));
             Environment.ExitCode = 1;
         }
     }
@@ -243,9 +267,10 @@ internal static class UsageRefreshTest
         try {
             Type candidateType=assembly.GetType("CodexRateMonitorNative.CodexExecutable",true);
             object candidate=Activator.CreateInstance(candidateType,new object[]{Application.ExecutablePath,"--fake-server"});
-            Call(client,"StartCandidate",candidate);Wait(()=>initialized==1,"initialize");
+            Call(client,"StartCandidate",candidate);Wait(()=>initialized==1,"initialize",15000);
             int originalPid=((Process)Field(client,"process")).Id;
             int first=Read(client);Wait(()=>snapshots==1,"initial response");
+            Check((string)Get(lastSnapshot,"PlanType")==UnicodePlan,"UTF-8 quota responses preserve Chinese and supplementary Unicode characters");
             Check(accounts==1 && completed==1 && (int)Get(lastSnapshot,"ReadRequestId")==first,"identity check precedes successful quota read");
             Check((double)Get(Get(lastSnapshot,"Primary"),"UsedPercent")==40,"Codex bucket takes precedence over legacy bucket");
             Check((bool)Get(lastSnapshot,"ReplaceMissingWindows"),"read replaces missing windows");
@@ -273,6 +298,12 @@ internal static class UsageRefreshTest
             Check(snapshots==beforeSwitch+1,"failed read cannot publish quota data");
             Control(client,"signed-out");int beforeLogout=completed;Read(client);Wait(()=>completed==beforeLogout+1,"signed out");
             Check(!(bool)Get(lastAccount,"CanReadQuota") && snapshots==beforeSwitch+1,"signed-out account cannot reuse quota data");
+        } catch {
+            Process helper=Field(client,"process") as Process;
+            Console.Error.WriteLine("Fixture state: running="+Get(client,"IsRunning")+
+                " exited="+(helper!=null && helper.HasExited)+
+                " exit_code="+(helper!=null && helper.HasExited?helper.ExitCode.ToString():"pending"));
+            throw;
         } finally { ((IDisposable)client).Dispose(); }
     }
     private static void ContextTests(Assembly assembly) {
@@ -416,7 +447,11 @@ internal static class UsageRefreshTest
     }
     private static void Output(object message) { Console.WriteLine(Json.Serialize(message)); }
     private static object Usage(int used) { return new Dictionary<string,object>{{"primary",new Dictionary<string,object>{{"usedPercent",used},{"windowDurationMins",300},{"resetsAt",1792000000}}}}; }
-    private static void Quota(int id, int used) { Output(new Dictionary<string,object>{{"id",id},{"result",new Dictionary<string,object>{{"rateLimits",Usage(60)},{"rateLimitsByLimitId",new Dictionary<string,object>{{"codex",Usage(used)},{"other",Usage(99)}}}}}}); }
+    private static void Quota(int id, int used) {
+        var codex=(Dictionary<string,object>)Usage(used);
+        codex["planType"]=UnicodePlan;
+        Output(new Dictionary<string,object>{{"id",id},{"result",new Dictionary<string,object>{{"rateLimits",Usage(60)},{"rateLimitsByLimitId",new Dictionary<string,object>{{"codex",codex},{"other",Usage(99)}}}}}});
+    }
     private static void Account(int id,string who) { Output(new Dictionary<string,object>{{"id",id},{"result",new Dictionary<string,object>{{"requiresOpenaiAuth",true},{"account",who=="signed-out"?null:new Dictionary<string,object>{{"type","chatgpt"},{"email",who+"@example.test"},{"planType","plus"}}}}}}); }
     private static void Push() { Output(new Dictionary<string,object>{{"method","account/rateLimits/updated"},{"params",new Dictionary<string,object>{{"rateLimits",Usage(41)}}}}); }
     private static void FakeServer() {
@@ -454,3 +489,18 @@ if (-not $csc) { throw '.NET Framework C# compiler was not found.' }
 if ($LASTEXITCODE -ne 0) { throw 'Usage refresh test compilation failed.' }
 & $testExe $monitorExe
 if ($LASTEXITCODE -ne 0) { throw 'Usage refresh test failed.' }
+$headlessStart = New-Object Diagnostics.ProcessStartInfo
+$headlessStart.FileName = $testExe
+$headlessStart.Arguments = '"' + $monitorExe + '" --headless'
+$headlessStart.UseShellExecute = $false
+$headlessStart.CreateNoWindow = $true
+$headlessStart.RedirectStandardOutput = $true
+$headlessStart.RedirectStandardError = $true
+$headlessProcess = [Diagnostics.Process]::Start($headlessStart)
+try {
+    $headlessOutput = $headlessProcess.StandardOutput.ReadToEnd()
+    $headlessError = $headlessProcess.StandardError.ReadToEnd()
+    $headlessProcess.WaitForExit()
+    Write-Output $headlessOutput
+    if ($headlessProcess.ExitCode -ne 0) { throw ('Headless protocol test failed: ' + $headlessError) }
+} finally { $headlessProcess.Dispose() }
