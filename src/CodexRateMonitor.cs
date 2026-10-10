@@ -1253,7 +1253,18 @@ namespace CodexRateMonitorNative
 
         private void UpdateOverlaySize()
         {
-            Size = OverlayRenderer.GetSnapshotPixelSize(settings, snapshot, ShowCreditsBadge, overlayDpi);
+            Size pixels = OverlayRenderer.GetSnapshotPixelSize(settings, snapshot, ShowCreditsBadge, overlayDpi);
+            if (Size != pixels)
+            {
+                // Form.SetBoundsCore caps Size at the screen's tracking limit.
+                // Keep this custom layered window's bounds equal to its bitmap,
+                // including large user scales on a small monitor.
+                if (IsHandleCreated)
+                    NativeMethods.SetWindowPos(Handle, IntPtr.Zero, 0, 0, pixels.Width, pixels.Height,
+                        NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
+                else
+                    Size = pixels;
+            }
             if (Visible && overlayMode == "desktop")
                 Location = ClampLocationToScreen(Location);
         }
@@ -3756,6 +3767,7 @@ namespace CodexRateMonitorNative
         internal const uint SWP_NOSIZE = 0x0001;
         internal const uint SWP_NOMOVE = 0x0002;
         internal const uint SWP_NOACTIVATE = 0x0010;
+        internal const uint SWP_NOZORDER = 0x0004;
         internal const uint SWP_SHOWWINDOW = 0x0040;
         internal const int SW_SHOWNOACTIVATE = 4;
         internal const uint GW_OWNER = 4;

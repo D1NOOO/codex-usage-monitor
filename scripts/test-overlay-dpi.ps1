@@ -32,6 +32,8 @@ internal static class OverlayDpiSmoke
     [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] private static extern int GetWindowLong(IntPtr window, int index);
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr window, out Rect rect);
+    [DllImport("user32.dll")] private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [StructLayout(LayoutKind.Sequential)] private struct Rect { public int Left, Top, Right, Bottom; }
 
     private static object Get(object instance, string name) { return instance.GetType().GetProperty(name).GetValue(instance, null); }
@@ -288,8 +290,51 @@ internal static class OverlayDpiSmoke
         Console.WriteLine("PASS " + cases + " credit font renders: independent main/time controls, supported size extremes, 3 languages, 1/2 lines, 100/200% DPI and preview parity.");
     }
 
+    private static void VerifyOversizedOverlay(Assembly assembly)
+    {
+        Type settingsType = assembly.GetType("CodexRateMonitorNative.MonitorSettings", true);
+        Type overlayType = assembly.GetType("CodexRateMonitorNative.OverlayForm", true);
+        Type previewType = assembly.GetType("CodexRateMonitorNative.OverlayPreviewControl", true);
+        // Exceed this machine's limit so high-resolution local desktops also
+        // reproduce the small-screen runner's Form.SetBoundsCore truncation.
+        int trackingWidth;
+        IntPtr previousContext = SetThreadDpiAwarenessContext(new IntPtr(-4));
+        try { trackingWidth = SystemInformation.MaxWindowTrackSize.Width; }
+        finally { SetThreadDpiAwarenessContext(previousContext); }
+        int dpi = Math.Max(96, (int)Math.Ceiling((trackingWidth + 64) * 96d / (702 * 1.7)));
+        Size expected = new Size((int)Math.Round(702 * (float)(1.7 * dpi / 96d)),
+            (int)Math.Round(40 * (float)(1.7 * dpi / 96d)));
+        Check(expected.Width > trackingWidth, "oversized fixture does not exceed the host limit");
+        foreach (string mode in new string[] { "desktop", "attach" })
+        {
+            object settings = Activator.CreateInstance(settingsType, true);
+            Set(settings, "OverlayMode", mode); Set(Get(settings, "Style"), "Scale", 2d);
+            using (var overlay = (Form)Activator.CreateInstance(overlayType, new object[] { settings }))
+            using (var preview = (Control)Activator.CreateInstance(previewType, true))
+            {
+                IntPtr handle = overlay.Handle;
+                Call(overlay, "SetSnapshot", previewType.GetField("sample", PrivateInstance).GetValue(preview));
+                Call(overlay, "SetResetCredits", previewType.GetField("sampleCredits", PrivateInstance).GetValue(preview));
+                foreach (int nextDpi in new int[] { dpi, 96, dpi })
+                {
+                    SendDpi(overlay, nextDpi);
+                    Size pixels = nextDpi == dpi ? expected : new Size(1193, 68);
+                    Rect native;
+                    Check(overlay.Size == pixels, mode + " overlay is capped by the host's tracking limit: " + overlay.Size + " vs " + pixels);
+                    Check(GetWindowRect(handle, out native) && native.Right - native.Left == pixels.Width &&
+                        native.Bottom - native.Top == pixels.Height, "native and managed oversized bounds differ");
+                    Set(preview, "Settings", settings); Set(preview, "TargetDpi", nextDpi);
+                    preview.Size = new Size(pixels.Width + 80, pixels.Height + 128);
+                    Check(((Rectangle)Call(preview, "GetOverlayBounds")).Size == pixels, "oversized preview dimensions differ");
+                }
+            }
+        }
+        Console.WriteLine("PASS oversized native/managed overlay bounds and preview parity across the host tracking limit in both modes.");
+    }
+
     private static void Run(Assembly assembly, string captures)
     {
+        VerifyOversizedOverlay(assembly);
         Type settingsType = assembly.GetType("CodexRateMonitorNative.MonitorSettings", true);
         Type overlayType = assembly.GetType("CodexRateMonitorNative.OverlayForm", true);
         Type previewType = assembly.GetType("CodexRateMonitorNative.OverlayPreviewControl", true);
