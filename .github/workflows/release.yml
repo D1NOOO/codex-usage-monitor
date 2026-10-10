@@ -51,6 +51,9 @@ jobs:
           ./scripts/test-usage-refresh.ps1
           ./scripts/test-auth-recovery-regression.ps1
           ./scripts/test-scale-migration.ps1
+          ./scripts/test-usage-panels.ps1
+          ./scripts/test-window-attachment.ps1
+          ./scripts/test-overlay-dpi.ps1
 
       - name: Attest release archive
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3

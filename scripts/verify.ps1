@@ -4,6 +4,33 @@ param()
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 
+$documentationFiles = @(
+    Get-ChildItem -LiteralPath $repoRoot -File -Filter 'README*.md'
+    foreach ($relativePath in @('docs', '.github\release-notes')) {
+        $directory = Join-Path $repoRoot $relativePath
+        if (Test-Path -LiteralPath $directory -PathType Container) {
+            Get-ChildItem -LiteralPath $directory -Recurse -File -Filter '*.md'
+        }
+    }
+)
+$strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+# Detect replacement characters and known UTF-8 text misread as GBK.
+# Use ASCII escapes so the check itself is safe in Windows PowerShell 5.1.
+$mojibakePattern = '\uFFFD|[\u922B\u922E\u9225]\?|\u7EE0\u20AC|\u7EFB\u4F80|\u951F\u65A4\u62F7'
+foreach ($document in $documentationFiles) {
+    try {
+        $content = $strictUtf8.GetString([IO.File]::ReadAllBytes($document.FullName))
+    } catch [System.Text.DecoderFallbackException] {
+        throw "Documentation must be valid UTF-8: $($document.FullName)"
+    }
+    $lines = $content -split '\r?\n'
+    for ($lineIndex = 0; $lineIndex -lt $lines.Count; $lineIndex++) {
+        if ($lines[$lineIndex] -match $mojibakePattern) {
+            throw "Possible documentation mojibake: $($document.FullName):$($lineIndex + 1)"
+        }
+    }
+}
+
 $textExtensions = @(
     '.cs', '.ps1', '.md', '.json', '.yml', '.yaml', '.txt',
     '.gitignore', '.gitattributes', '.editorconfig'
@@ -90,5 +117,6 @@ Get-ChildItem -LiteralPath $repoRoot -Recurse -Filter '*.json' |
     }
 
 Write-Host "Verified $($textFiles.Count) text files."
+Write-Host "Documentation UTF-8/mojibake check: $($documentationFiles.Count) files clean"
 Write-Host "Localization keys: $(($definedKeys | Sort-Object -Unique).Count)"
 Write-Host 'Privacy/secret scan: clean'

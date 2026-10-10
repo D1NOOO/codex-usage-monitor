@@ -119,6 +119,15 @@ Copy-Item -LiteralPath (Join-Path $repoRoot 'SECURITY.md') -Destination (Join-Pa
 New-Item -ItemType Directory -Path (Join-Path $outputPath 'docs') -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\usage-refresh.md') -Destination (Join-Path $outputPath 'docs\usage-refresh.md')
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\issue-6-dpi-regression.md') -Destination (Join-Path $outputPath 'docs\issue-6-dpi-regression.md')
+foreach ($screenshot in @(
+    'appearance-settings-reset-credits-zh-cn.png',
+    'overlay-oneline-credits-zh-cn.png',
+    'overlay-multirow-credits-zh-cn.png',
+    'tray-tooltip-zh-cn.png'
+)) {
+    Copy-Item -LiteralPath (Join-Path (Join-Path $repoRoot 'docs') $screenshot) `
+        -Destination (Join-Path (Join-Path $outputPath 'docs') $screenshot)
+}
 
 $hash = Get-FileHash -LiteralPath $exe -Algorithm SHA256
 "$($hash.Hash.ToLowerInvariant())  CodexRateMonitor.exe" |
