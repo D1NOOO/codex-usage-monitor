@@ -17,5 +17,6 @@
 - Both language sections should convey the same main changes.
 - Keep the notes concise and focused on meaningful changes; avoid an exhaustive list of implementation details.
 - Put the most important changes first in each language section.
+- Group entries under `修复` and `改进` headings, followed by matching English `Fixes` and `Improvements` sections. Use bulleted entries beneath the headings and Markdown hyperlinks for relevant issues.
 - Send the proposed changelog to the user for review before submitting a version tag.
 - Wait for the user to confirm that they have reviewed the notes and approve proceeding before creating or pushing the version tag or triggering a release through another route. Do not infer approval from silence or permission to commit ordinary code.
