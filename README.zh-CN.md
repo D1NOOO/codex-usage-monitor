@@ -35,6 +35,8 @@
 
 
 外观设置提供样式预览：位置、字体、颜色、透明度，以及「显示重置券（只读查询）」开关。预览中的用量、时间和重置券数量为演示数据。
+「额度面板」提供「自动（推荐）」「全部显示（5h+7d）」「仅显示周用量」三个选项。自动模式下，完整读取确认账号只有 7 天额度时，收起 5 小时面板，横排缩短宽度、多行缩短高度；预览与托盘摘要同步适配。「全部显示（5h+7d）」保留缺失窗口，标注「未提供」；「仅显示周用量」固定显示 7 天额度。首次读取显示状态提示，刷新失败保留上次数据与布局，不完整推送不会收起面板。
+选择「窗口吸附 + 右下角」时默认切换为多行，之后仍可手动选择 1 行；已保存的行数在重新打开设置或重启后保留。
 悬浮框会实时跟随 Windows 显示缩放，「整体缩放」在此基础上叠加。预览空间足够时按实际尺寸显示，空间不足时会标明缩小比例。
 整体缩放默认新的 100%（对应原来 85% 的尺寸），可在「外观设置 → 排版与尺寸 → 整体缩放」调整为 50%–200%。字体、间距与圆角一起缩放，旧配置更新后保持实际大小。
 
@@ -101,8 +103,8 @@ flowchart LR
 ```
 
 程序按「桌面端内置 → npm 安装 → PATH」的顺序寻找 Codex 可执行文件，启动
-`codex.exe app-server`，发送 `account/rateLimits/read`，将 `primary` 渲染为 5 小时窗口、
-`secondary` 为 7 天窗口，并合并 `account/rateLimits/updated` 推送。
+`codex.exe app-server`，发送 `account/rateLimits/read`，按窗口时长识别 5 小时与 7 天额度，
+并合并 `account/rateLimits/updated` 推送。7 天窗口出现在 `primary` 时仍识别为 7 天额度。
 
 登录、令牌刷新和与 OpenAI 的通信全部由 ChatGPT/Codex 负责，本工具不实现认证。
 唯一例外：启用重置券时，程序本地读取 `~/.codex/auth.json` 的访问令牌，仅用于查询只读接口
@@ -124,6 +126,8 @@ flowchart LR
 | `Language`                                       | `auto` / `zh-CN` / `zh-TW` / `en`  |
 | `OverlayMode`                                    | `desktop`（默认，桌面悬浮）/ `attach`（吸附窗口） |
 | `UsageDisplay`                                   | `remaining`（默认）/ `used`            |
+| `UsagePanels` | `auto`（默认，自动适配可用额度）/ `all`（全部显示 5h+7d）/ `weekly`（仅显示周用量） |
+| `DisplayLines` | `1` / `2`；选中右下角窗口吸附时默认 `2`，允许手动覆盖 |
 | `ForegroundRefreshSeconds`                       | 30–`RefreshSeconds`，前台刷新间隔（默认 30）     |
 | `RefreshSeconds`                                 | 30–900，窗口可见但位于后台时的刷新间隔（默认 60） |
 | `MinimizedRefreshSeconds`                        | 60–3600，最小化时的刷新间隔（默认 300）          |

@@ -26,6 +26,18 @@ if (-not $outputPath.StartsWith($artifactsRoot, [StringComparison]::OrdinalIgnor
 
 # Keep build intermediates separate from running regression-test executables.
 $buildRoot = [IO.Path]::GetFullPath((Join-Path (Join-Path $repoRoot '.build') (Split-Path $outputPath -Leaf)))
+# Check before deleting any resources: a running EXE can otherwise leave a
+# partially cleared output directory when recursive cleanup reaches it.
+$existingExe = Join-Path $outputPath 'CodexRateMonitor.exe'
+if (Test-Path -LiteralPath $existingExe) {
+    try {
+        $outputProbe = [IO.File]::Open($existingExe, [IO.FileMode]::Open,
+            [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $outputProbe.Dispose()
+    } catch {
+        throw "Output executable is in use or cannot be replaced. Use a separate OutputDirectory. Existing files were preserved: '$existingExe'."
+    }
+}
 foreach ($path in @($outputPath, $buildRoot)) {
     if (Test-Path -LiteralPath $path) {
         Remove-Item -LiteralPath $path -Recurse -Force

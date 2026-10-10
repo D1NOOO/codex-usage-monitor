@@ -29,6 +29,7 @@ namespace CodexRateMonitorNative
         private readonly RadioButton oneLineRadio;
         private readonly RadioButton twoLinesRadio;
         private readonly CheckBox showResetCredits;
+        private readonly ComboBox usagePanels;
         private readonly ComboBox language;
         private GroupBox positionGroup;
         private TableLayoutPanel positionLinesRow;
@@ -158,10 +159,42 @@ namespace CodexRateMonitorNative
             showResetCredits.AutoSize = true;
             showResetCredits.Margin = new Padding(22, 2, 0, 0);
             showResetCredits.CheckedChanged += ControlChanged;
+            usagePanels = new ComboBox();
+            usagePanels.DropDownStyle = ComboBoxStyle.DropDownList;
+            usagePanels.Width = 190;
+            usagePanels.Margin = new Padding(4, 1, 0, 0);
+            usagePanels.Items.Add(I18n.T("UsagePanelsAuto"));
+            usagePanels.Items.Add(I18n.T("UsagePanelsAll"));
+            usagePanels.Items.Add(I18n.T("UsagePanelsWeekly"));
+            usagePanels.SelectedIndexChanged += ControlChanged;
+            var usagePanelsLabel = new Label();
+            usagePanelsLabel.Text = I18n.T("UsagePanelsLabel");
+            usagePanelsLabel.AutoSize = true;
+            usagePanelsLabel.Margin = new Padding(4, 4, 0, 0);
             modePanel.Controls.Add(desktopModeRadio);
             modePanel.Controls.Add(attachModeRadio);
             modePanel.Controls.Add(showResetCredits);
-            modeGroup.Controls.Add(modePanel);
+            var usagePanelRow = new SettingsFlowPanel();
+            usagePanelRow.Dock = DockStyle.Top;
+            usagePanelRow.AutoSize = true;
+            usagePanelRow.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            usagePanelRow.Padding = new Padding(4, 2, 4, 4);
+            usagePanelRow.Margin = Padding.Empty;
+            usagePanelRow.Controls.Add(usagePanelsLabel);
+            usagePanelRow.Controls.Add(usagePanels);
+            var modeContent = new TableLayoutPanel();
+            modeContent.Dock = DockStyle.Top;
+            modeContent.AutoSize = true;
+            modeContent.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            modeContent.ColumnCount = 1;
+            modeContent.RowCount = 2;
+            modeContent.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            modeContent.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            modeContent.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            modePanel.Margin = Padding.Empty;
+            modeContent.Controls.Add(modePanel, 0, 0);
+            modeContent.Controls.Add(usagePanelRow, 0, 1);
+            modeGroup.Controls.Add(modeContent);
             root.Controls.Add(modeGroup, 0, 2);
 
             // ---- Display position + Display lines: side-by-side on row 3 using two
@@ -356,6 +389,11 @@ namespace CodexRateMonitorNative
         public void SetPreviewDpi(int dpi)
         {
             preview.TargetDpi = dpi;
+        }
+
+        public void SetUsageSnapshot(RateSnapshot value)
+        {
+            preview.SetUsageSnapshot(value);
         }
 
         protected override void OnDpiLayoutChanged()
@@ -699,6 +737,7 @@ namespace CodexRateMonitorNative
                 desktopModeRadio.Checked = working.OverlayMode == "desktop";
                 attachModeRadio.Checked = working.OverlayMode == "attach";
                 showResetCredits.Checked = working.ShowResetCredits;
+                usagePanels.SelectedIndex = working.UsagePanels == "weekly" ? 2 : working.UsagePanels == "all" ? 1 : 0;
                 string languageCode = I18n.NormalizeSetting(working.Language);
                 for (int i = 0; i < language.Items.Count; i++)
                 {
@@ -738,6 +777,15 @@ namespace CodexRateMonitorNative
             if (loading)
                 return;
             UpdateWorking();
+            // Selecting corner attachment supplies a default, while subsequent
+            // edits to the line-count radios remain an explicit user choice.
+            loading = true;
+            try
+            {
+                twoLinesRadio.Checked = working.DisplayLines == "2";
+                oneLineRadio.Checked = working.DisplayLines != "2";
+            }
+            finally { loading = false; }
             UpdatePositionGroupVisibility();
             Preview();
         }
@@ -769,11 +817,12 @@ namespace CodexRateMonitorNative
 
         private void UpdateWorking()
         {
-            working.Position = bottomPosition.Checked ? "bottom-right" : "top";
             working.DisplayLines = twoLinesRadio.Checked ? "2" : "1";
+            working.SelectPlacement(desktopModeRadio.Checked ? "desktop" : "attach",
+                bottomPosition.Checked ? "bottom-right" : "top");
             working.UsageDisplay = showUsed.Checked ? "used" : "remaining";
-            working.OverlayMode = desktopModeRadio.Checked ? "desktop" : "attach";
             working.ShowResetCredits = showResetCredits.Checked;
+            working.UsagePanels = usagePanels.SelectedIndex == 2 ? "weekly" : usagePanels.SelectedIndex == 1 ? "all" : "auto";
             var selectedLanguage = language.SelectedItem as LanguageOption;
             working.Language = selectedLanguage == null ? "auto" : selectedLanguage.Code;
             working.Style.FontFamily = string.IsNullOrWhiteSpace(fontFamily.Text)
@@ -957,6 +1006,7 @@ namespace CodexRateMonitorNative
     {
         private MonitorSettings settings = new MonitorSettings();
         private int targetDpi;
+        private RateSnapshot displayedSample;
         private readonly RateSnapshot sample = new RateSnapshot
         {
             Primary = new WindowUsage { UsedPercent = 35,
@@ -997,6 +1047,24 @@ namespace CodexRateMonitorNative
             }
         }
 
+        private RateSnapshot PreviewSnapshot
+        {
+            get { return displayedSample ?? sample; }
+        }
+
+        public void SetUsageSnapshot(RateSnapshot value)
+        {
+            int? confirmed = UsagePanelTools.GetConfirmedWindows(value);
+            displayedSample = !confirmed.HasValue ? null : new RateSnapshot
+            {
+                Primary = (confirmed.Value & 1) != 0 ? sample.Primary : null,
+                Secondary = (confirmed.Value & 2) != 0 ? sample.Secondary : null,
+                ConfirmedWindows = confirmed,
+                ReplaceMissingWindows = true
+            };
+            RefreshLayout();
+        }
+
         private void RefreshLayout()
         {
             if (Parent != null) Parent.PerformLayout();
@@ -1005,7 +1073,7 @@ namespace CodexRateMonitorNative
 
         public override Size GetPreferredSize(Size proposedSize)
         {
-            Size overlay = OverlayRenderer.GetPixelSize(settings, settings.ShowResetCredits, TargetDpi);
+            Size overlay = OverlayRenderer.GetSnapshotPixelSize(settings, PreviewSnapshot, settings.ShowResetCredits, TargetDpi);
             int padding = (int)Math.Ceiling(12d * DeviceDpi / 96d);
             int width = proposedSize.Width > 0 ? proposedSize.Width : overlay.Width + padding * 2;
             float fit = Math.Min(1f, Math.Max(1, width - padding * 2) / (float)overlay.Width);
@@ -1014,7 +1082,7 @@ namespace CodexRateMonitorNative
 
         public Rectangle GetOverlayBounds()
         {
-            Size overlay = OverlayRenderer.GetPixelSize(settings, settings.ShowResetCredits, TargetDpi);
+            Size overlay = OverlayRenderer.GetSnapshotPixelSize(settings, PreviewSnapshot, settings.ShowResetCredits, TargetDpi);
             int padding = (int)Math.Ceiling(12d * DeviceDpi / 96d);
             int top = Font.Height + padding * 2;
             float fit = Math.Min(1f, Math.Min(
@@ -1030,9 +1098,9 @@ namespace CodexRateMonitorNative
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
-            Size pixels = OverlayRenderer.GetPixelSize(settings, settings.ShowResetCredits, TargetDpi);
+            Size pixels = OverlayRenderer.GetSnapshotPixelSize(settings, PreviewSnapshot, settings.ShowResetCredits, TargetDpi);
             Rectangle bounds = GetOverlayBounds();
-            using (Bitmap bitmap = OverlayRenderer.CreateBitmap(settings, sample,
+            using (Bitmap bitmap = OverlayRenderer.CreateBitmap(settings, PreviewSnapshot,
                 settings.ShowResetCredits ? sampleCredits : null, null, TargetDpi))
             {
                 // The real window applies opacity through the compositor. Show

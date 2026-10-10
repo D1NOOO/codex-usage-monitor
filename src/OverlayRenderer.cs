@@ -1,5 +1,6 @@
 using System;
 using System.ComponentModel;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
@@ -49,6 +50,46 @@ namespace CodexRateMonitorNative
         }
     }
 
+    internal static class UsagePanelTools
+    {
+        public static int? GetConfirmedWindows(RateSnapshot snapshot)
+        {
+            if (snapshot == null) return null;
+            if (snapshot.ReplaceMissingWindows)
+                return (snapshot.Primary != null ? 1 : 0) | (snapshot.Secondary != null ? 2 : 0);
+            return snapshot.ConfirmedWindows;
+        }
+
+        public static int GetVisibleWindows(MonitorSettings settings, RateSnapshot snapshot)
+        {
+            if (settings.UsagePanels == "weekly") return 2;
+            int? confirmed = GetConfirmedWindows(snapshot);
+            return settings.UsagePanels == "all" || !confirmed.HasValue || confirmed.Value == 0
+                ? 3 : confirmed.Value;
+        }
+
+        public static int GetWindowCount(MonitorSettings settings, RateSnapshot snapshot)
+        {
+            int visible = GetVisibleWindows(settings, snapshot);
+            return ((visible & 1) != 0 ? 1 : 0) + ((visible & 2) != 0 ? 1 : 0);
+        }
+
+        public static string FormatSummary(MonitorSettings settings, RateSnapshot snapshot)
+        {
+            int visible = GetVisibleWindows(settings, snapshot);
+            var parts = new List<string>();
+            for (int index = 0; index < 2; index++)
+            {
+                if ((visible & (1 << index)) == 0) continue;
+                WindowUsage usage = snapshot == null ? null : (index == 0 ? snapshot.Primary : snapshot.Secondary);
+                string percent = usage == null ? "--%" : UsageDisplayTools.FormatPercent(
+                    UsageDisplayTools.GetDisplayedPercent(usage.UsedPercent, settings.UsageDisplay));
+                parts.Add(I18n.Translate(index == 0 ? "FiveHour" : "SevenDay", settings.Language) + " " + percent);
+            }
+            return string.Join(" · ", parts.ToArray());
+        }
+    }
+
     // Both windows use this 96-DPI geometry and the same painting code.
     internal sealed class OverlayRenderer
     {
@@ -78,11 +119,27 @@ namespace CodexRateMonitorNative
                 (int)Math.Round(logical.Height * scale));
         }
 
+        private static Size GetSnapshotLogicalSize(MonitorSettings settings, RateSnapshot snapshot, bool credits)
+        {
+            int count = UsagePanelTools.GetWindowCount(settings, snapshot);
+            if (count == 2) return GetLogicalSize(settings, credits);
+            return settings.DisplayLines == "2"
+                ? new Size(DrawingHelpers.BottomRightWidth, credits ? 67 : 39)
+                : new Size(credits ? 470 : 238, 40);
+        }
+
+        public static Size GetSnapshotPixelSize(MonitorSettings settings, RateSnapshot snapshot, bool credits, int dpi)
+        {
+            Size logical = GetSnapshotLogicalSize(settings, snapshot, credits);
+            float scale = GetScale(settings, dpi);
+            return new Size((int)Math.Round(logical.Width * scale), (int)Math.Round(logical.Height * scale));
+        }
+
         public static Bitmap CreateBitmap(MonitorSettings settings, RateSnapshot snapshot,
             ResetCreditsInfo credits, string status, int dpi)
         {
             bool showCredits = settings.ShowResetCredits && credits != null && credits.AvailableCount > 0;
-            Size size = GetPixelSize(settings, showCredits, dpi);
+            Size size = GetSnapshotPixelSize(settings, snapshot, showCredits, dpi);
             var bitmap = new Bitmap(size.Width, size.Height, PixelFormat.Format32bppPArgb);
             try
             {
@@ -123,7 +180,7 @@ namespace CodexRateMonitorNative
             float scale = GetScale(settings, dpi);
             g.ScaleTransform(scale, scale);
 
-            Size logical = GetLogicalSize(settings, ShowCreditsBadge);
+            Size logical = GetSnapshotLogicalSize(settings, snapshot, ShowCreditsBadge);
             float areaW = logical.Width;
             float areaH = logical.Height;
             float cardW = areaW;
@@ -147,23 +204,47 @@ namespace CodexRateMonitorNative
                 g.DrawPath(borderPen, outerPath);
             }
 
-            if (settings.DisplayLines == "2")
+            bool stacked = settings.DisplayLines == "2";
+            int visible = UsagePanelTools.GetVisibleWindows(settings, snapshot);
+            int count = UsagePanelTools.GetWindowCount(settings, snapshot);
+            if (snapshot == null)
             {
-                DrawCard(g, DrawingHelpers.GetBottomRightCardBounds(true),
-                    true, card, text, muted, track);
-                DrawCard(g, DrawingHelpers.GetBottomRightCardBounds(false),
-                    false, card, text, muted, track);
-                if (ShowCreditsBadge)
-                    DrawCreditsCard(g, DrawingHelpers.GetCreditsRowBounds(),
-                        card, text, muted, track);
+                DrawStatusCard(g, stacked ? new RectangleF(3, 3, 246, count * 39 - 6)
+                    : new RectangleF(5, 5, count * 232 - 4, 30), card, muted);
             }
             else
             {
-                DrawCard(g, new RectangleF(5, 5, 228, 30), true, card, text, muted, track);
-                DrawCard(g, new RectangleF(237, 5, 228, 30), false, card, text, muted, track);
-                if (ShowCreditsBadge)
-                    DrawCreditsCard(g, new RectangleF(469, 5, 148, 30),
-                        card, text, muted, track);
+                int slot = 0;
+                for (int index = 0; index < 2; index++)
+                {
+                    if ((visible & (1 << index)) == 0) continue;
+                    RectangleF bounds = stacked ? new RectangleF(3, 3 + slot * 39, 246, 33)
+                        : new RectangleF(5 + slot * 232, 5, 228, 30);
+                    DrawCard(g, bounds, index == 0, card, text, muted, track);
+                    slot++;
+                }
+            }
+            if (ShowCreditsBadge)
+                DrawCreditsCard(g, stacked ? new RectangleF(3, 3 + count * 39, 246, 22)
+                    : new RectangleF(5 + count * 232, 5, 228, 30), card, text, muted, track);
+        }
+
+        private void DrawStatusCard(Graphics g, RectangleF bounds, Color card, Color text)
+        {
+            using (var brush = new SolidBrush(card))
+            using (GraphicsPath path = DrawingHelpers.RoundRect(bounds,
+                Math.Max(0, (float)settings.Style.CornerRadius - 3f)))
+                g.FillPath(brush, path);
+            using (var font = new Font(settings.Style.FontFamily, (float)settings.Style.FontSize,
+                FontStyle.Regular, GraphicsUnit.Pixel))
+            using (var brush = new SolidBrush(text))
+            using (var format = new StringFormat())
+            {
+                format.Alignment = StringAlignment.Center;
+                format.LineAlignment = StringAlignment.Center;
+                format.Trimming = StringTrimming.EllipsisCharacter;
+                RectangleF content = RectangleF.Inflate(bounds, -7, 0);
+                g.DrawString(status ?? I18n.Translate("UsageLoading", settings.Language), font, brush, content, format);
             }
         }
 
@@ -190,7 +271,8 @@ namespace CodexRateMonitorNative
             string percent = usage == null ? "--%" :
                 UsageDisplayTools.FormatPercent(value);
             string reset = usage == null
-                ? (snapshot == null ? (status ?? I18n.Translate("Connecting", settings.Language)) : I18n.Translate("Unavailable", settings.Language))
+                ? I18n.Translate(UsagePanelTools.GetConfirmedWindows(snapshot).HasValue
+                    ? "UsageNotProvided" : "UsageLoading", settings.Language)
                 : FormatReset(usage.ResetsAt);
 
             FontFamily family;
@@ -299,10 +381,11 @@ namespace CodexRateMonitorNative
                 family = SystemFonts.MessageBoxFont.FontFamily;
             }
 
-            float creditFontSize = (float)Math.Max(10, settings.Style.ResetFontSize);
+            float mainFontSize = (float)settings.Style.FontSize;
+            float resetFontSize = (float)settings.Style.ResetFontSize;
             using (family)
-            using (var mainFont = new Font(family, creditFontSize, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (var smallFont = new Font(family, creditFontSize, FontStyle.Regular, GraphicsUnit.Pixel))
+            using (var mainFont = new Font(family, mainFontSize, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (var smallFont = new Font(family, resetFontSize, FontStyle.Regular, GraphicsUnit.Pixel))
             using (var textBrush = new SolidBrush(daysLeft <= 7d ? deadline : text))
             using (var deadlineBrush = new SolidBrush(deadline))
             {

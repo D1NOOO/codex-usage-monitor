@@ -13,6 +13,7 @@ $testSource = Join-Path $testDirectory 'OverlayDpiSmoke.cs'
 $testExe = Join-Path $testDirectory 'OverlayDpiSmoke.exe'
 @'
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Reflection;
@@ -91,6 +92,202 @@ internal static class OverlayDpiSmoke
         }
     }
 
+    private static HashSet<int> CreditTextPixels(Bitmap bitmap, bool count, string lines)
+    {
+        float scale = bitmap.Width / (float)(lines == "2" ? 252 : 702);
+        int left = (int)Math.Floor((lines == "2" ? 3 : 469) * scale);
+        int top = lines == "2" ? (int)Math.Floor(75 * scale) : 0;
+        var pixels = new HashSet<int>();
+        for (int y = top; y < bitmap.Height; y++)
+        for (int x = left; x < bitmap.Width; x++)
+        {
+            Color color = bitmap.GetPixel(x, y);
+            bool match = count ? color.R > color.G + 40 && color.R > color.B + 40 :
+                color.B > color.R + 40 && color.B > color.G + 40;
+            if (match) pixels.Add(y * bitmap.Width + x);
+        }
+        return pixels;
+    }
+
+    private static int TextHeight(HashSet<int> pixels, int width)
+    {
+        int top = int.MaxValue, bottom = -1;
+        foreach (int pixel in pixels)
+        {
+            top = Math.Min(top, pixel / width);
+            bottom = Math.Max(bottom, pixel / width);
+        }
+        return bottom < 0 ? 0 : bottom - top + 1;
+    }
+
+    private static bool SameExpiryGlyphs(HashSet<int> expected, HashSet<int> visible)
+    {
+        if (expected.Count == 0 || Math.Abs(expected.Count - visible.Count) > Math.Max(4, expected.Count / 50)) return false;
+        // GDI can shift individual glyph edges by one pixel when the layout
+        // rectangle changes, even with the same right edge and complete text.
+        foreach (int pixel in expected)
+            if (!visible.Contains(pixel) && !visible.Contains(pixel - 1) && !visible.Contains(pixel + 1)) return false;
+        foreach (int pixel in visible)
+            if (!expected.Contains(pixel) && !expected.Contains(pixel - 1) && !expected.Contains(pixel + 1)) return false;
+        return true;
+    }
+
+    private static void VerifyCompleteCreditExpiry(Assembly assembly, string captures)
+    {
+        Type settingsType = assembly.GetType("CodexRateMonitorNative.MonitorSettings", true);
+        Type previewType = assembly.GetType("CodexRateMonitorNative.OverlayPreviewControl", true);
+        Type i18n = assembly.GetType("CodexRateMonitorNative.I18n", true);
+        MethodInfo render = assembly.GetType("CodexRateMonitorNative.OverlayRenderer", true).GetMethod("CreateBitmap");
+        MethodInfo drawText = assembly.GetType("CodexRateMonitorNative.DrawingHelpers", true).GetMethod("DrawCreditsText");
+        int cases = 0;
+        foreach (string language in new string[] { "zh-CN", "zh-TW", "en" })
+        foreach (string lines in new string[] { "1", "2" })
+        foreach (int dpi in new int[] { 96, 192 })
+        foreach (bool largeFonts in new bool[] { false, true })
+        foreach (int available in new int[] { 2, 12 })
+        {
+            object settings = Activator.CreateInstance(settingsType, true);
+            Set(settings, "Language", language); Set(settings, "DisplayLines", lines);
+            object style = Get(settings, "Style");
+            Set(style, "Text", "#FF0000"); Set(style, "MutedText", "#0000FF");
+            Set(style, "FontSize", largeFonts ? 22d : 14d);
+            Set(style, "ResetFontSize", largeFonts ? 18d : 13d);
+            using (var preview = (Control)Activator.CreateInstance(previewType, true))
+            {
+                object sample = previewType.GetField("sample", PrivateInstance).GetValue(preview);
+                object credits = previewType.GetField("sampleCredits", PrivateInstance).GetValue(preview);
+                Set(credits, "AvailableCount", available); Set(credits, "EarliestExpiry", DateTime.Today.AddDays(20));
+                Set(credits, "EarliestGranted", null);
+                string count = string.Format((string)i18n.GetMethod("Translate").Invoke(null,
+                    new object[] { "CreditsBadge", language }), available);
+                string expiry = string.Format((string)i18n.GetMethod("Translate").Invoke(null,
+                    new object[] { "CreditsExpire", language }), Call(credits, "FormatEarliestExpiry"));
+                using (var actual = (Bitmap)render.Invoke(null, new object[] { settings, sample, credits, null, dpi }))
+                using (var untrimmed = new Bitmap(actual.Width, actual.Height))
+                using (Graphics graphics = Graphics.FromImage(untrimmed))
+                using (var mainFont = new Font((string)Get(style, "FontFamily"), (float)(double)Get(style, "FontSize"), FontStyle.Bold, GraphicsUnit.Pixel))
+                using (var smallFont = new Font((string)Get(style, "FontFamily"), (float)(double)Get(style, "ResetFontSize"), FontStyle.Regular, GraphicsUnit.Pixel))
+                {
+                    graphics.Clear(Color.White);
+                    graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                    graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+                    float scale = (float)((double)Get(style, "Scale") * 0.85 * dpi / 96d);
+                    graphics.ScaleTransform(scale, scale);
+                    // Keep the deadline's right edge and baseline, but give its
+                    // reference text ample space so it cannot become ellipsis.
+                    RectangleF card = lines == "2" ? new RectangleF(3, 81, 246, 22)
+                        : new RectangleF(469, 5, 228, 30);
+                    var spacious = new RectangleF(card.X - 512, card.Y, card.Width + 512, card.Height);
+                    drawText.Invoke(null, new object[] { graphics, spacious, count, expiry,
+                        mainFont, smallFont, Brushes.Red, Brushes.Blue });
+                    // The real card paints its progress track after the text.
+                    // Include it in the reference at large supported fonts.
+                    using (var trackBrush = new SolidBrush(ColorTranslator.FromHtml((string)Get(style, "Track"))))
+                        graphics.FillRectangle(trackBrush, card.X + 7, card.Bottom - 4, card.Width - 14, 2);
+                    HashSet<int> expected = CreditTextPixels(untrimmed, false, lines);
+                    HashSet<int> visible = CreditTextPixels(actual, false, lines);
+                    if (!SameExpiryGlyphs(expected, visible) && !string.IsNullOrEmpty(captures))
+                    {
+                        actual.Save(Path.Combine(captures, "expiry-mismatch-actual.png"));
+                        untrimmed.Save(Path.Combine(captures, "expiry-mismatch-reference.png"));
+                    }
+                    Check(SameExpiryGlyphs(expected, visible),
+                        "Credit expiry is clipped or replaced by ellipsis: " + language + "," + lines + "," + dpi + "," + largeFonts + "," + available + "; glyph pixels " + visible.Count + "/" + expected.Count);
+                    if (language == "zh-CN" && lines == "1" && dpi == 96 && !largeFonts && available == 2)
+                    {
+                        using (var narrow = new Bitmap(actual.Width, actual.Height))
+                        using (Graphics shortGraphics = Graphics.FromImage(narrow))
+                        {
+                            shortGraphics.Clear(Color.White);
+                            shortGraphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                            shortGraphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+                            shortGraphics.ScaleTransform(scale, scale);
+                            var oldCard = new RectangleF(card.X + 80, card.Y, 148, card.Height);
+                            drawText.Invoke(null, new object[] { shortGraphics, oldCard, count, expiry,
+                                mainFont, smallFont, Brushes.Red, Brushes.Blue });
+                            Check(!SameExpiryGlyphs(expected, CreditTextPixels(narrow, false, lines)),
+                                "The expiry regression did not reject the old narrow card's truncated text");
+                        }
+                    }
+                    if (!string.IsNullOrEmpty(captures) && dpi == 192 && !largeFonts && available == 2)
+                        actual.Save(Path.Combine(captures, "complete-credit-expiry-" + language + "-" + lines + ".png"));
+                    cases++;
+                }
+            }
+        }
+        Console.WriteLine("PASS " + cases + " complete credit expiry renders: full localized text matches an untrimmed reference, default/max fonts and single/double-digit counts.");
+    }
+
+    private static void VerifyCreditFonts(Assembly assembly, string captures)
+    {
+        Type settingsType = assembly.GetType("CodexRateMonitorNative.MonitorSettings", true);
+        Type overlayType = assembly.GetType("CodexRateMonitorNative.OverlayForm", true);
+        Type previewType = assembly.GetType("CodexRateMonitorNative.OverlayPreviewControl", true);
+        MethodInfo createBitmap = assembly.GetType("CodexRateMonitorNative.OverlayRenderer", true).GetMethod("CreateBitmap");
+        int cases = 0;
+        foreach (string language in new string[] { "zh-CN", "zh-TW", "en" })
+        foreach (string lines in new string[] { "1", "2" })
+        foreach (int dpi in new int[] { 96, 192 })
+        {
+            object settings = Activator.CreateInstance(settingsType, true);
+            Set(settings, "Language", language);
+            Set(settings, "DisplayLines", lines);
+            Set(settings, "OverlayMode", "desktop");
+            object style = Get(settings, "Style");
+            Set(style, "Text", "#FF0000");
+            Set(style, "MutedText", "#0000FF");
+            Set(style, "Opacity", 1d);
+            using (var preview = (Control)Activator.CreateInstance(previewType, true))
+            using (var overlay = (Form)Activator.CreateInstance(overlayType, new object[] { settings }))
+            {
+                object sample = previewType.GetField("sample", PrivateInstance).GetValue(preview);
+                object credits = previewType.GetField("sampleCredits", PrivateInstance).GetValue(preview);
+                Set(credits, "EarliestExpiry", DateTime.Today.AddDays(20));
+                // Keep the blue progress bar empty so the mask measures only deadline glyphs.
+                Set(credits, "EarliestGranted", null);
+                Set(preview, "Settings", settings);
+                Set(preview, "TargetDpi", dpi);
+                Call(overlay, "SetSnapshot", sample);
+                Call(overlay, "SetResetCredits", credits);
+                string context = language + ", lines=" + lines + ", dpi=" + dpi;
+                foreach (bool changeMain in new bool[] { true, false })
+                {
+                    Set(style, "FontSize", 14d);
+                    Set(style, "ResetFontSize", 9d);
+                    HashSet<int> fixedCount = null;
+                    int previousHeight = 0;
+                    foreach (double size in changeMain ? new double[] { 10, 14, 22 } : new double[] { 9, 13, 18 })
+                    {
+                        Set(style, changeMain ? "FontSize" : "ResetFontSize", size);
+                        using (var bitmap = (Bitmap)createBitmap.Invoke(null, new object[] { settings, sample, credits, null, dpi }))
+                        {
+                            HashSet<int> count = CreditTextPixels(bitmap, true, lines);
+                            HashSet<int> deadline = CreditTextPixels(bitmap, false, lines);
+                            int height = TextHeight(changeMain ? count : deadline, bitmap.Width);
+                            Check(height > previousHeight, (changeMain ? "main" : "time") +
+                                " font size did not increase the corresponding credit text: " + size + ", " + context);
+                            if (!changeMain)
+                            {
+                                if (fixedCount == null) fixedCount = count;
+                                Check(fixedCount.SetEquals(count), "time font size changed credit count pixels: " + size + ", " + context);
+                            }
+                            previousHeight = height;
+                            if (!string.IsNullOrEmpty(captures) && language == "zh-CN" && dpi == 192)
+                                bitmap.Save(Path.Combine(captures, "credit-fonts-" + lines + "-" +
+                                    (changeMain ? "main-" : "time-") + size + ".png"));
+                        }
+                        Call(overlay, "ApplySettings", settings);
+                        SendDpi(overlay, dpi);
+                        preview.Size = new Size(overlay.Width + 80, overlay.Height + 128);
+                        Compare(overlay, preview, (Rectangle)Call(preview, "GetOverlayBounds"), "");
+                        cases++;
+                    }
+                }
+            }
+        }
+        Console.WriteLine("PASS " + cases + " credit font renders: independent main/time controls, supported size extremes, 3 languages, 1/2 lines, 100/200% DPI and preview parity.");
+    }
+
     private static void Run(Assembly assembly, string captures)
     {
         Type settingsType = assembly.GetType("CodexRateMonitorNative.MonitorSettings", true);
@@ -117,7 +314,7 @@ internal static class OverlayDpiSmoke
                 IntPtr handle = overlay.Handle;
                 Check(AreDpiAwarenessContextsEqual(GetWindowDpiAwarenessContext(handle), new IntPtr(-4)), "window is not PerMonitorV2 aware");
                 int hostDpi = (int)GetDpiForWindow(handle);
-                int width = lines == "2" ? 252 : (credits ? 622 : 470);
+                int width = lines == "2" ? 252 : (credits ? 702 : 470);
                 int height = lines == "2" ? (credits ? 106 : 78) : 40;
                 Set(preview, "Settings", settings);
                 object sample = previewType.GetField("sample", PrivateInstance).GetValue(preview);
@@ -182,6 +379,8 @@ internal static class OverlayDpiSmoke
         }
         Console.WriteLine("PASS " + cases + " overlay DPI transitions; 3 languages, 1/2 lines, credits, 50/100/200% manual scale, compact baseline, 1:1 preview, shrink, anchors and click-through.");
         Console.WriteLine("PASS " + paintings + " preview/overlay pixel comparisons.");
+        VerifyCreditFonts(assembly, captures);
+        VerifyCompleteCreditExpiry(assembly, captures);
         // Exercise the updater's actual copy path, keeping runtime settings.
         string fixture = Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), "update-payload");
         string source = Path.Combine(fixture, "source"), destination = Path.Combine(fixture, "destination");

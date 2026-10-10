@@ -2,6 +2,7 @@
   "Language": "auto",
   "Position": "top",
   "DisplayLines": "1",
+  "UsagePanels": "auto",
   "OverlayMode": "desktop",
   "DesktopX": 0,
   "DesktopY": 0,

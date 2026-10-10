@@ -34,6 +34,15 @@ Hovering the tray icon shows a multi-line summary of usage and reset credits.
 Appearance settings offer a style preview: position, fonts, colors, opacity,
 and the reset-credits (read-only) toggle.
 The preview uses sample usage, reset times, and credit counts.
+Usage panels offer Auto (recommended), Show all (5h + 7d), and Weekly usage only.
+In Auto mode, a complete read confirming only weekly usage hides the
+5-hour panel and reduces horizontal width or stacked height. Preview and tray summaries
+follow the same available windows. Show all retains missing windows as "Not provided";
+Weekly usage only always displays the 7-day panel.
+Initial reads show a status message; refresh errors retain cached data and layout, and
+incomplete notifications cannot collapse panels.
+Selecting window attachment at the bottom-right defaults to multi-row. You can then
+choose one row manually; saved row choices survive reopening settings and restarting.
 The overlay follows Windows display scaling immediately; the appearance scale
 is an additional multiplier. Preview renders at actual size when it fits and
 shows the reduction percentage when space is limited.
@@ -115,8 +124,9 @@ flowchart LR
 
 The monitor locates a Codex executable (desktop-bundled 鈫?npm install 鈫?PATH),
 starts `codex.exe app-server`, sends `account/rateLimits/read`, renders
-`primary` as the 5-hour window and `secondary` as the 7-day window, and merges
-`account/rateLimits/updated` notifications.
+usage windows by duration (5 hours or 7 days), and merges
+`account/rateLimits/updated` notifications. A weekly window in `primary` is still
+identified as weekly usage.
 
 OpenAI authentication is owned by ChatGPT/Codex. The one exception: when reset
 credits are enabled, the monitor reads the access token from `~/.codex/auth.json`
@@ -143,6 +153,8 @@ Common `settings.json` fields (template in `config/settings.default.json`):
 | `Language` | `auto` / `zh-CN` / `zh-TW` / `en` |
 | `OverlayMode` | `desktop` (default, floating) / `attach` |
 | `UsageDisplay` | `remaining` (default) / `used` |
+| `UsagePanels` | `auto` (default, available windows) / `all` (show 5h + 7d) / `weekly` (weekly usage only) |
+| `DisplayLines` | `1` / `2`; selecting bottom-right attachment defaults to `2`, with a manual override |
 | `ForegroundRefreshSeconds` | 30 to `RefreshSeconds`, foreground interval (default 30) |
 | `RefreshSeconds` | 30 to 900, interval while visible in the background (default 60) |
 | `MinimizedRefreshSeconds` | 60鈥?600, cadence while minimized (default 300) |

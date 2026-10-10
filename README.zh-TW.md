@@ -29,6 +29,8 @@
 ![通知區域浮動提示](docs/tray-tooltip-zh-cn.png)
 
 外觀設定提供樣式預覽：位置、字型、顏色、透明度，以及「顯示重置券（唯讀查詢）」開關。預覽中的用量、時間和重置券數量為示範資料。
+「額度面板」提供「自動（推薦）」「全部顯示（5h+7d）」「僅顯示週用量」三個選項。自動模式下，完整讀取確認帳號只有 7 天額度時，收起 5 小時面板，橫排縮短寬度、多行縮短高度；預覽與系統匣摘要同步調整。「全部顯示（5h+7d）」保留缺少的視窗，標示「未提供」；「僅顯示週用量」固定顯示 7 天額度。首次讀取顯示狀態提示，重新整理失敗保留上次資料與版面，不完整推送不會收起面板。
+選擇「視窗吸附 + 右下角」時預設切換為多行，之後仍可手動選擇 1 行；已儲存的行數在重新開啟設定或重新啟動後保留。
 浮動列會即時跟隨 Windows 顯示縮放，「整體縮放」在此基礎上疊加。預覽空間足夠時按實際尺寸顯示，空間不足時會標明縮小比例。
 整體縮放預設新的 100%（對應原來 85% 的尺寸），可在「外觀設定 → 排版與尺寸 → 整體縮放」調整為 50%–200%。字型、間距與圓角一起縮放，舊設定更新後保持實際大小。
 
@@ -94,8 +96,8 @@ flowchart LR
 ```
 
 程式按「桌面版內建 → npm 安裝 → PATH」的順序尋找 Codex 執行檔，啟動
-`codex.exe app-server`，傳送 `account/rateLimits/read`，將 `primary` 呈現為 5 小時視窗、
-`secondary` 為 7 天視窗，並合併 `account/rateLimits/updated` 推送。
+`codex.exe app-server`，傳送 `account/rateLimits/read`，依視窗時長識別 5 小時與 7 天額度，
+並合併 `account/rateLimits/updated` 推送。7 天視窗出現在 `primary` 時仍識別為 7 天額度。
 
 登入、權杖更新及與 OpenAI 的通訊全部由 ChatGPT/Codex 負責，本工具不實作驗證。
 唯一例外：啟用重置券時，程式本機讀取 `~/.codex/auth.json` 的存取權杖，僅用於查詢唯讀端點
@@ -117,6 +119,8 @@ flowchart LR
 | `Language` | `auto` / `zh-CN` / `zh-TW` / `en` |
 | `OverlayMode` | `desktop`（預設，桌面懸浮）/ `attach`（吸附視窗） |
 | `UsageDisplay` | `remaining`（預設）/ `used` |
+| `UsagePanels` | `auto`（預設，自動調整可用額度）/ `all`（全部顯示 5h+7d）/ `weekly`（僅顯示週用量） |
+| `DisplayLines` | `1` / `2`；選取右下角視窗吸附時預設 `2`，允許手動覆寫 |
 | `ForegroundRefreshSeconds` | 30–`RefreshSeconds`，前景重新整理間隔（預設 30） |
 | `RefreshSeconds` | 30–900，視窗可見但位於背景時的重新整理間隔（預設 60） |
 | `MinimizedRefreshSeconds` | 60–3600，最小化時的重新整理間隔（預設 300） |

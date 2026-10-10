@@ -167,9 +167,15 @@ internal static class SettingsLayoutSmoke
             int before = previews;
             scale.Value = 110;
             Check(previews > before, "changing an input stopped live preview");
+            var usagePanels = (ComboBox)formType.GetField("usagePanels", PrivateInstance).GetValue(form);
+            before = previews;
+            usagePanels.SelectedIndex = 2;
+            Check(previews > before, "weekly selection stopped live preview");
             string saveText = (string)i18n.GetMethod("T").Invoke(null, new object[] { "SaveClose" });
             Descendants(form).OfType<Button>().Single(delegate(Button button) { return button.Text == saveText; }).PerformClick();
             Check(saves == 1 && cancels == 0, "save did not commit exactly once");
+            Check((string)typeof(T).GetProperty("UsagePanels").GetValue(saved, null) == "weekly",
+                "save lost the weekly panel selection");
             object style = typeof(T).GetProperty("Style").GetValue(saved, null);
             Check(Math.Abs((double)style.GetType().GetProperty("Scale").GetValue(style, null) - 1.1) < 0.001,
                 "save lost the edited input");
@@ -226,6 +232,14 @@ internal static class SettingsLayoutSmoke
                 }
                 SimulateDpi(form, dpi);
                 formType.GetMethod("SetPreviewDpi").Invoke(form, new object[] { dpi });
+                var usagePanels = (ComboBox)formType.GetField("usagePanels", PrivateInstance).GetValue(form);
+                foreach (string option in usagePanels.Items)
+                {
+                    int textWidth = TextRenderer.MeasureText(option, usagePanels.Font, Size.Empty,
+                        TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding).Width;
+                    Check(textWidth + SystemInformation.VerticalScrollBarWidth + 8 <= usagePanels.ClientSize.Width,
+                        language + " / " + dpi + " DPI: panel option clipped: " + option);
+                }
                 try { VerifyContent(form); }
                 catch (Exception ex)
                 {

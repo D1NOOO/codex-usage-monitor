@@ -62,7 +62,7 @@ internal static class ScaleMigrationTest
     private static void MigrationTests(Assembly current) {
         object fresh=Activator.CreateInstance(Settings,true);
         Check(Scale(fresh)==1 && (int)Get(Get(fresh,"Style"),"ScaleBasisVersion")==2,"new settings must be current-basis 100%");
-        Check(Pixels(fresh,96,true)==new Size(529,34),"new 100% must render at the former 85% size");
+        Check(Pixels(fresh,96,true)==new Size(597,34),"new 100% must retain the 85% scale factor with equal-width credit cards");
         foreach(double legacy in new[]{0.75,0.82,0.85,1d,1.35,1.5}) {
             object settings=Parse(Legacy(legacy));double scale=Scale(settings);
             Check(Math.Abs(scale*0.85-legacy)<1e-12,"migration changed effective scale "+legacy);
@@ -73,7 +73,7 @@ internal static class ScaleMigrationTest
                 "migration changed unrelated preferences");
             foreach(string lines in new[]{"1","2"}) foreach(bool credits in new[]{false,true}) foreach(int dpi in new[]{96,120,144,168,192,240}) {
                 Set(settings,"DisplayLines",lines);
-                int width=lines=="2"?252:credits?622:470,height=lines=="2"?credits?106:78:40;
+                int width=lines=="2"?252:credits?702:470,height=lines=="2"?credits?106:78:40;
                 float oldFactor=(float)(legacy*dpi/96d);
                 Check(Pixels(settings,dpi,credits)==new Size((int)Math.Round(width*oldFactor),(int)Math.Round(height*oldFactor)),
                     "existing dimensions changed after migration at "+dpi+" DPI");
@@ -162,7 +162,15 @@ internal static class ScaleMigrationTest
                 Set(old,"DisplayLines",lines);Set(next,"DisplayLines",lines);Set(old,"ShowResetCredits",credits);Set(next,"ShowResetCredits",credits);
                 using(Bitmap before=(Bitmap)oldRenderer.GetMethod("CreateBitmap").Invoke(null,new object[]{old,oldSample,credits?oldCredits:null,"",dpi}))
                 using(Bitmap after=(Bitmap)Renderer.GetMethod("CreateBitmap").Invoke(null,new object[]{next,newSample,credits?newCredits:null,"",dpi})) {
-                    Check(before.Size==after.Size && Convert.ToBase64String(Bytes(before))==Convert.ToBase64String(Bytes(after)),"old/new rendered pixels differ at "+oldScale+" / "+dpi+" / "+language);
+                    if(lines=="1" && credits) {
+                        Check(before.Height==after.Height && after.Width==(int)Math.Round(702*(float)(oldScale* dpi/96d)),"credit width changed the migrated scale");
+                        Rectangle quotaArea=new Rectangle(0,0,(int)Math.Round(466*(float)(oldScale*dpi/96d)),before.Height);
+                        using(Bitmap beforeQuotas=before.Clone(quotaArea,PixelFormat.Format32bppPArgb))
+                        using(Bitmap afterQuotas=after.Clone(quotaArea,PixelFormat.Format32bppPArgb))
+                            Check(Convert.ToBase64String(Bytes(beforeQuotas))==Convert.ToBase64String(Bytes(afterQuotas)),"equal-width credits changed quota card pixels");
+                    } else {
+                        Check(before.Size==after.Size && Convert.ToBase64String(Bytes(before))==Convert.ToBase64String(Bytes(after)),"old/new rendered pixels differ at "+oldScale+" / "+dpi+" / "+language);
+                    }
                     pixelCases++;
                 }
             }

@@ -467,6 +467,8 @@ namespace CodexRateMonitorNative
             completedReadId = 0;
             snapshotStabilizer.Reset();
             overlay.ClearSnapshot(status);
+            if (appearanceForm != null && !appearanceForm.IsDisposed)
+                appearanceForm.SetUsageSnapshot(null);
             overlay.SetResetCredits(null);
             overlay.SetUsageHint(status);
             trayIcon.Text = SafeTrayText(I18n.F("TrayStatus", status));
@@ -613,6 +615,8 @@ namespace CodexRateMonitorNative
                 LogNotificationDisposition(snapshot, generation, "displayed", "validated");
                 TrackSnapshotFreshness(snapshot);
                 lastSnapshot = snapshot;
+                if (appearanceForm != null && !appearanceForm.IsDisposed)
+                    appearanceForm.SetUsageSnapshot(snapshot);
                 lastSnapshotAt = DateTime.Now;
                 lastSnapshotMonotonic = NowSeconds;
                 refreshScheduler.ObserveResets(snapshot.Primary == null ? null : snapshot.Primary.ResetsAt,
@@ -654,21 +658,8 @@ namespace CodexRateMonitorNative
                 I18n.T(UsageDisplayTools.IsRemaining(settings.UsageDisplay)
                     ? "Remaining"
                     : "Used"));
-            text += "\n" + string.Format(
-                CultureInfo.InvariantCulture,
-                "{0} {1} · {2} {3}",
-                I18n.T("FiveHour"),
-                lastSnapshot.Primary == null
-                    ? "--%"
-                    : UsageDisplayTools.FormatPercent(
-                        UsageDisplayTools.GetDisplayedPercent(
-                            lastSnapshot.Primary.UsedPercent, settings.UsageDisplay)),
-                I18n.T("SevenDay"),
-                lastSnapshot.Secondary == null
-                    ? "--%"
-                    : UsageDisplayTools.FormatPercent(
-                        UsageDisplayTools.GetDisplayedPercent(
-                            lastSnapshot.Secondary.UsedPercent, settings.UsageDisplay)));
+            string summary = UsagePanelTools.FormatSummary(settings, lastSnapshot);
+            text += "\n" + summary;
             string updated = I18n.F("UpdatedAt", lastSnapshotAt.ToString("HH:mm:ss"));
             double cacheAge = Math.Max(0, NowSeconds - lastSnapshotMonotonic);
             int interval = UsageRefreshScheduler.Interval(lastUsageState,
@@ -689,12 +680,9 @@ namespace CodexRateMonitorNative
             overlay.SetUsageHint(hint);
             // The compact form works in all three languages without truncating
             // the update time. Failure remains visible even in attach mode.
-            string compact = I18n.F("UsageTray",
+            string compact = I18n.F("UsageTraySummary",
                 I18n.T(UsageDisplayTools.IsRemaining(settings.UsageDisplay) ? "Remaining" : "Used"),
-                lastSnapshot.Primary == null ? "--%" : UsageDisplayTools.FormatPercent(
-                    UsageDisplayTools.GetDisplayedPercent(lastSnapshot.Primary.UsedPercent, settings.UsageDisplay)),
-                lastSnapshot.Secondary == null ? "--%" : UsageDisplayTools.FormatPercent(
-                    UsageDisplayTools.GetDisplayedPercent(lastSnapshot.Secondary.UsedPercent, settings.UsageDisplay)));
+                summary);
             if (refreshFailed || stale)
                 compact += "\n" + lastSnapshotAt.ToString("HH:mm:ss") + " " +
                     I18n.T(refreshFailed ? "RefreshFailedShort" : "CachedShort") + " " + FormatCacheAge(cacheAge);
@@ -1000,14 +988,14 @@ namespace CodexRateMonitorNative
 
         private void SetPosition(string position)
         {
-            settings.Position = position;
+            settings.SelectPlacement(settings.OverlayMode, position);
             settings.Save();
             overlay.ApplySettings(settings);
         }
 
         private void SetOverlayMode(string mode)
         {
-            settings.OverlayMode = mode;
+            settings.SelectPlacement(mode, settings.Position);
             settings.Save();
             if (desktopModeItem != null)
                 desktopModeItem.Checked = mode == "desktop";
@@ -1073,6 +1061,7 @@ namespace CodexRateMonitorNative
                     overlay.ApplySettings(original);
                 });
             appearanceForm.FormClosed += delegate { appearanceForm = null; };
+            appearanceForm.SetUsageSnapshot(lastSnapshot);
             appearanceForm.SetPreviewDpi(overlay.OverlayDpi);
             appearanceForm.Show();
             appearanceForm.Activate();
@@ -1245,7 +1234,7 @@ namespace CodexRateMonitorNative
                 RecreateHandle();
             }
 
-            UpdateOverlaySize();
+            UpdateOverlayLayout();
 
             if (overlayMode == "desktop" && Visible)
                 ShowDesktop();
@@ -1264,7 +1253,7 @@ namespace CodexRateMonitorNative
 
         private void UpdateOverlaySize()
         {
-            Size = OverlayRenderer.GetPixelSize(settings, ShowCreditsBadge, overlayDpi);
+            Size = OverlayRenderer.GetSnapshotPixelSize(settings, snapshot, ShowCreditsBadge, overlayDpi);
             if (Visible && overlayMode == "desktop")
                 Location = ClampLocationToScreen(Location);
         }
@@ -1323,6 +1312,10 @@ namespace CodexRateMonitorNative
 
         public void SetSnapshot(RateSnapshot value)
         {
+            if (value != null)
+                value.ConfirmedWindows = value.ReplaceMissingWindows
+                    ? UsagePanelTools.GetConfirmedWindows(value)
+                    : (snapshot == null ? null : snapshot.ConfirmedWindows);
             if (snapshot != null && value != null && !value.ReplaceMissingWindows)
             {
                 if (value.Primary == null)
@@ -1334,6 +1327,7 @@ namespace CodexRateMonitorNative
             }
             snapshot = value;
             status = null;
+            UpdateOverlayLayout();
             RefreshSurface();
         }
 
@@ -1348,14 +1342,25 @@ namespace CodexRateMonitorNative
         {
             snapshot = null;
             status = value;
+            UpdateOverlayLayout();
             RefreshSurface();
         }
 
         public void SetResetCredits(ResetCreditsInfo value)
         {
             resetCredits = value;
-            UpdateOverlaySize();
+            UpdateOverlayLayout();
             RefreshSurface();
+        }
+
+        private void UpdateOverlayLayout()
+        {
+            UpdateOverlaySize();
+            // Native attachment uses ShowWindow rather than Form.Show(), so
+            // WinForms' managed Visible flag can lag the actual window state.
+            if (overlayMode == "attach" && attachedWindow != IntPtr.Zero &&
+                IsHandleCreated && NativeMethods.IsWindowVisible(Handle))
+                AttachTo(attachedWindow);
         }
 
         public void AttachTo(IntPtr codexWindow)
@@ -2668,6 +2673,8 @@ namespace CodexRateMonitorNative
 
     internal static class WindowLocator
     {
+        private static IntPtr lastDesktopWindow;
+
         public static DesktopUsageState GetUsageState(IntPtr mainWindow)
         {
             if (mainWindow == IntPtr.Zero || !NativeMethods.IsWindowVisible(mainWindow) ||
@@ -2708,54 +2715,6 @@ namespace CodexRateMonitorNative
 
         public static IntPtr FindDesktopMainWindow()
         {
-            Process selected = null;
-            try
-            {
-                foreach (Process process in DesktopAppProcess.GetRunningProcesses())
-                {
-                    bool candidate;
-                    try
-                    {
-                        candidate = DesktopAppProcess.IsDesktopAppProcess(process) &&
-                                    process.MainWindowHandle != IntPtr.Zero;
-                    }
-                    catch
-                    {
-                        candidate = false;
-                    }
-
-                    if (!candidate)
-                    {
-                        process.Dispose();
-                        continue;
-                    }
-
-                    if (selected == null || CompareStartTime(process, selected) > 0)
-                    {
-                        if (selected != null)
-                            selected.Dispose();
-                        selected = process;
-                    }
-                    else
-                    {
-                        process.Dispose();
-                    }
-                }
-
-                if (selected != null)
-                    return selected.MainWindowHandle;
-
-                return FindEnumeratedDesktopWindow();
-            }
-            finally
-            {
-                if (selected != null)
-                    selected.Dispose();
-            }
-        }
-
-        private static IntPtr FindEnumeratedDesktopWindow()
-        {
             var processIds = new HashSet<uint>();
             foreach (Process process in DesktopAppProcess.GetRunningProcesses())
             {
@@ -2773,24 +2732,86 @@ namespace CodexRateMonitorNative
                 }
             }
 
+            lastDesktopWindow = FindMainWindow(processIds, lastDesktopWindow,
+                NativeMethods.GetForegroundWindow());
+            return lastDesktopWindow;
+        }
+
+        private static bool IsMainWindowCandidate(IntPtr window, HashSet<uint> processIds)
+        {
+            if (window == IntPtr.Zero || !NativeMethods.IsWindowVisible(window))
+                return false;
+
+            uint processId;
+            NativeMethods.GetWindowThreadProcessId(window, out processId);
+            if (!processIds.Contains(processId) ||
+                NativeMethods.GetWindow(window, NativeMethods.GW_OWNER) != IntPtr.Zero)
+                return false;
+
+            int style = NativeMethods.GetWindowLong(window, NativeMethods.GWL_STYLE);
+            int extendedStyle = NativeMethods.GetWindowLong(window, NativeMethods.GWL_EXSTYLE);
+            if ((style & NativeMethods.WS_CHILD) != 0 ||
+                (extendedStyle & (NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_NOACTIVATE)) != 0)
+                return false;
+
+            // Menus can be visible and unowned, so Process.MainWindowHandle's
+            // first-visible-unowned-window heuristic is insufficient here.
+            var className = new StringBuilder(256);
+            if (NativeMethods.GetClassName(window, className, className.Capacity) == 0)
+                return false;
+            string name = className.ToString();
+            return !string.Equals(name, "#32768", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(name, "Chrome_WidgetWin_2", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(name, "tooltips_class32", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static IntPtr FindMainWindow(HashSet<uint> processIds,
+            IntPtr previousWindow, IntPtr foregroundWindow)
+        {
             if (processIds.Count == 0)
                 return IntPtr.Zero;
 
+            // Walk GW_OWNER explicitly: GA_ROOTOWNER uses GetParent, which
+            // does not return the owner of an owned overlapped window.
+            IntPtr foregroundMain = FindRootOwner(foregroundWindow);
+            if (IsMainWindowCandidate(foregroundMain, processIds))
+                return foregroundMain;
+            if (IsMainWindowCandidate(previousWindow, processIds))
+                return previousWindow;
+
             IntPtr found = IntPtr.Zero;
+            long largestArea = 0;
             NativeMethods.EnumWindows(delegate(IntPtr window, IntPtr parameter)
             {
-                if (!NativeMethods.IsWindowVisible(window))
+                if (!IsMainWindowCandidate(window, processIds))
                     return true;
 
-                uint processId;
-                NativeMethods.GetWindowThreadProcessId(window, out processId);
-                if (!processIds.Contains(processId))
+                NativeMethods.RECT rect;
+                if (!NativeMethods.GetWindowRect(window, out rect))
                     return true;
-
-                found = window;
-                return false;
+                long area = (long)(rect.Right - rect.Left) * (rect.Bottom - rect.Top);
+                if (area > largestArea)
+                {
+                    found = window;
+                    largestArea = area;
+                }
+                return true;
             }, IntPtr.Zero);
             return found;
+        }
+
+        private static IntPtr FindRootOwner(IntPtr window)
+        {
+            IntPtr root = window == IntPtr.Zero ? IntPtr.Zero :
+                NativeMethods.GetAncestor(window, NativeMethods.GA_ROOT);
+            for (int depth = 0; root != IntPtr.Zero && depth < 32; depth++)
+            {
+                IntPtr owner = NativeMethods.GetWindow(root, NativeMethods.GW_OWNER);
+                if (owner == IntPtr.Zero)
+                    return root;
+                root = NativeMethods.GetAncestor(owner, NativeMethods.GA_ROOT);
+            }
+            return IntPtr.Zero;
         }
 
         public static IntPtr FindForegroundDesktopMainWindow()
@@ -2806,26 +2827,13 @@ namespace CodexRateMonitorNative
                 {
                     if (!DesktopAppProcess.IsDesktopAppProcess(process))
                         return IntPtr.Zero;
-                    return process.MainWindowHandle == IntPtr.Zero
-                        ? foreground
-                        : process.MainWindowHandle;
+                    return FindMainWindow(new HashSet<uint> { processId }, IntPtr.Zero, foreground);
                 }
             }
             catch
             {
                 return IntPtr.Zero;
             }
-        }
-
-        private static int CompareStartTime(Process left, Process right)
-        {
-            DateTime leftStart;
-            DateTime rightStart;
-            try { leftStart = left.StartTime; }
-            catch { leftStart = DateTime.MinValue; }
-            try { rightStart = right.StartTime; }
-            catch { rightStart = DateTime.MinValue; }
-            return leftStart.CompareTo(rightStart);
         }
     }
 
@@ -2838,6 +2846,8 @@ namespace CodexRateMonitorNative
         // "1" = single horizontal row; "2" = two stacked rows. Decoupled from
         // Position so the corner placement and the line count are independent.
         public string DisplayLines { get; set; }
+        // "auto" follows windows confirmed by a full read; "all" retains placeholders.
+        public string UsagePanels { get; set; }
         public int RefreshSeconds { get; set; }
         public int ForegroundRefreshSeconds { get; set; }
         public bool DiagnosticsEnabled { get; set; }
@@ -2865,6 +2875,7 @@ namespace CodexRateMonitorNative
             Language = "auto";
             Position = "top";
             DisplayLines = "1";
+            UsagePanels = "auto";
             UsageDisplay = "remaining";
             RefreshSeconds = 60;
             ForegroundRefreshSeconds = 30;
@@ -2905,6 +2916,8 @@ namespace CodexRateMonitorNative
             var root = serializer.DeserializeObject(text) as Dictionary<string, object>;
             if (root == null) throw new FormatException("Settings must be a JSON object.");
             var result = serializer.Deserialize<MonitorSettings>(text) ?? new MonitorSettings();
+            if (!HasProperty(root, "DisplayLines"))
+                result.DisplayLines = result.OverlayMode == "attach" && result.Position == "bottom-right" ? "2" : "1";
             var rawStyle = FindProperty(root, "Style") as Dictionary<string, object>;
             if (rawStyle == null || !HasProperty(rawStyle, "ScaleBasisVersion"))
             {
@@ -2950,6 +2963,7 @@ namespace CodexRateMonitorNative
             clone.Position = Position;
             clone.UsageDisplay = UsageDisplay;
             clone.DisplayLines = DisplayLines;
+            clone.UsagePanels = UsagePanels;
             clone.RefreshSeconds = RefreshSeconds;
             clone.ForegroundRefreshSeconds = ForegroundRefreshSeconds;
             clone.DiagnosticsEnabled = DiagnosticsEnabled;
@@ -2965,13 +2979,23 @@ namespace CodexRateMonitorNative
             return clone;
         }
 
+        public void SelectPlacement(string mode, string position)
+        {
+            bool enteringCorner = mode == "attach" && position == "bottom-right" &&
+                (OverlayMode != "attach" || Position != "bottom-right");
+            OverlayMode = mode;
+            Position = position;
+            if (enteringCorner) DisplayLines = "2";
+        }
+
         private void Normalize()
         {
             Language = I18n.NormalizeSetting(Language);
             if (Position != "top" && Position != "bottom-right")
                 Position = "top";
             if (DisplayLines != "1" && DisplayLines != "2")
-                DisplayLines = "1";
+                DisplayLines = OverlayMode == "attach" && Position == "bottom-right" ? "2" : "1";
+            if (UsagePanels != "all" && UsagePanels != "weekly") UsagePanels = "auto";
             if (OverlayMode != "attach" && OverlayMode != "desktop")
                 OverlayMode = "desktop";
             UsageDisplay = UsageDisplayTools.Normalize(UsageDisplay);
@@ -3098,6 +3122,8 @@ namespace CodexRateMonitorNative
         public WindowUsage Secondary { get; set; }
         public string PlanType { get; set; }
         public bool ReplaceMissingWindows { get; set; }
+        // 1 = 5h, 2 = 7d; null means no complete read has confirmed availability.
+        public int? ConfirmedWindows { get; set; }
         public int ReadRequestId { get; set; }
     }
 
@@ -3451,6 +3477,7 @@ namespace CodexRateMonitorNative
                 Primary = Clone(value.Primary),
                 Secondary = Clone(value.Secondary),
                 PlanType = value.PlanType,
+                ConfirmedWindows = value.ConfirmedWindows,
                 ReplaceMissingWindows = value.ReplaceMissingWindows
             };
         }
@@ -3523,7 +3550,7 @@ namespace CodexRateMonitorNative
         public const int BottomRightWidth = 252;
         public const int BottomRightHeight = 78;
         public const int BottomRightHeightWithCredits = 106;
-        public const int TopWidthWithCredits = 622;
+        public const int TopWidthWithCredits = 702;
 
         public static RectangleF GetBottomRightCardBounds(bool primary)
         {
@@ -3563,6 +3590,13 @@ namespace CodexRateMonitorNative
                 graphics.DrawString(count, mainFont, textBrush,
                     new PointF(bounds.Left + leftPadding, mainTop), textFormat);
 
+                // Reserve the count's measured width so increasing either font
+                // cannot draw the right-aligned deadline over the main text.
+                float expiryLeft = bounds.Left + leftPadding +
+                    MeasureTextWidth(graphics, count, mainFont, textFormat) + 6f;
+                float expiryWidth = bounds.Right - rightPadding - expiryLeft;
+                if (expiryWidth <= 0f)
+                    return;
                 using (StringFormat expiryFormat = (StringFormat)textFormat.Clone())
                 {
                     expiryFormat.Alignment = StringAlignment.Far;
@@ -3570,9 +3604,9 @@ namespace CodexRateMonitorNative
                     float expiryHeight = GetCellHeight(smallFont) + 2f;
                     graphics.DrawString(expiry, smallFont, deadlineBrush,
                         new RectangleF(
-                            bounds.Left + leftPadding,
+                            expiryLeft,
                             smallTop,
-                            bounds.Width - leftPadding - rightPadding,
+                            expiryWidth,
                             expiryHeight),
                         expiryFormat);
                 }
@@ -3724,6 +3758,13 @@ namespace CodexRateMonitorNative
         internal const uint SWP_NOACTIVATE = 0x0010;
         internal const uint SWP_SHOWWINDOW = 0x0040;
         internal const int SW_SHOWNOACTIVATE = 4;
+        internal const uint GW_OWNER = 4;
+        internal const uint GA_ROOT = 2;
+        internal const int GWL_STYLE = -16;
+        internal const int GWL_EXSTYLE = -20;
+        internal const int WS_CHILD = 0x40000000;
+        internal const int WS_EX_TOOLWINDOW = 0x80;
+        internal const int WS_EX_NOACTIVATE = 0x08000000;
 
         [StructLayout(LayoutKind.Sequential)]
         internal struct RECT
@@ -3744,6 +3785,18 @@ namespace CodexRateMonitorNative
 
         [DllImport("user32.dll")]
         internal static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        internal static extern IntPtr GetWindow(IntPtr hWnd, uint command);
+
+        [DllImport("user32.dll")]
+        internal static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
+        internal static extern int GetWindowLong(IntPtr hWnd, int index);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        internal static extern int GetClassName(IntPtr hWnd, StringBuilder className, int maxCount);
 
         [DllImport("user32.dll")]
         internal static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
