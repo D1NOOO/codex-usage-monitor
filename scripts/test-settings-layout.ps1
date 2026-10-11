@@ -163,6 +163,15 @@ internal static class SettingsLayoutSmoke
             form.ShowInTaskbar = false;
             form.Opacity = 0;
             form.Show();
+            var attach = (RadioButton)formType.GetField("attachModeRadio", PrivateInstance).GetValue(form);
+            var desktop = (RadioButton)formType.GetField("desktopModeRadio", PrivateInstance).GetValue(form);
+            var position = (GroupBox)formType.GetField("positionGroup", PrivateInstance).GetValue(form);
+            attach.Checked = true;
+            Check(position.Visible, "switching to attachment mode left the position group hidden");
+            VerifyContent(form);
+            desktop.Checked = true;
+            Check(!position.Visible, "switching to desktop mode left the position group visible");
+            VerifyContent(form);
             var scale = (NumericUpDown)formType.GetField("scale", PrivateInstance).GetValue(form);
             int before = previews;
             scale.Value = 110;

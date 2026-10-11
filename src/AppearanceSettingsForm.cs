@@ -18,6 +18,7 @@ namespace CodexRateMonitorNative
         private MonitorSettings working;
         private bool loading;
         private bool committed;
+        private bool arrangingContent;
 
         private readonly OverlayPreviewControl preview;
         private readonly RadioButton bottomPosition;
@@ -70,7 +71,7 @@ namespace CodexRateMonitorNative
             content.AutoScroll = true;
             Controls.Add(content);
 
-            var root = new TableLayoutPanel();
+            var root = new SettingsContentPanel();
             // A top-docked child is excluded from horizontal AutoScroll in
             // WinForms. Keep explicit bounds so narrow screens can scroll too.
             root.Anchor = AnchorStyles.Top | AnchorStyles.Left;
@@ -365,19 +366,26 @@ namespace CodexRateMonitorNative
             InitializeDpiLayout(new Size(820, 760));
             ResumeLayout(true);
             content.ClientSizeChanged += delegate { LayoutContent(content, root); };
-            root.Layout += delegate { LayoutContent(content, root); };
+            root.LayoutCompleted += delegate { LayoutContent(content, root); };
             LayoutContent(content, root);
         }
 
-        private static void LayoutContent(Panel content, TableLayoutPanel root)
+        private void LayoutContent(Panel content, TableLayoutPanel root)
         {
-            root.Width = Math.Max(root.MinimumSize.Width, content.ClientSize.Width);
-            int preferred = root.GetPreferredSize(new Size(root.Width, 0)).Height;
-            int contentBottom = root.Controls.Cast<Control>().Max(delegate(Control control)
+            if (arrangingContent) return;
+            arrangingContent = true;
+            try
             {
-                return control.Bottom + control.Margin.Bottom;
-            });
-            root.Height = Math.Max(preferred, contentBottom + root.Padding.Bottom);
+                root.Width = Math.Max(root.MinimumSize.Width, content.ClientSize.Width);
+                // AutoSize rows already measure their children during layout.
+                // Reuse those bounds instead of measuring the entire tree again.
+                int contentBottom = root.Controls.Cast<Control>().Max(delegate(Control control)
+                {
+                    return control.Bottom + control.Margin.Bottom;
+                });
+                root.Height = contentBottom + root.Padding.Bottom;
+            }
+            finally { arrangingContent = false; }
         }
 
         protected override void OnLoad(EventArgs e)
@@ -963,32 +971,71 @@ namespace CodexRateMonitorNative
         }
     }
 
+    internal sealed class SettingsContentPanel : TableLayoutPanel
+    {
+        public event EventHandler LayoutCompleted;
+
+        protected override void OnLayout(LayoutEventArgs e)
+        {
+            base.OnLayout(e);
+            if (LayoutCompleted != null) LayoutCompleted(this, EventArgs.Empty);
+        }
+    }
+
     internal sealed class SettingsGroupBox : GroupBox
     {
         public override Size GetPreferredSize(Size proposedSize)
         {
-            Size preferred = base.GetPreferredSize(proposedSize);
             int width = Width > 1 ? Width : proposedSize.Width;
             int innerWidth = Math.Max(1, width - Padding.Horizontal);
+            int preferredWidth = TextRenderer.MeasureText(Text, Font).Width;
             int height = 0;
             foreach (Control control in Controls)
             {
                 if (control.Visible)
+                {
+                    Size childSize = control.GetPreferredSize(new Size(innerWidth, 0));
+                    preferredWidth = Math.Max(preferredWidth, childSize.Width + control.Margin.Horizontal);
                     height = Math.Max(height,
-                        control.GetPreferredSize(new Size(innerWidth, 0)).Height + control.Margin.Vertical);
+                        childSize.Height + control.Margin.Vertical);
+                }
             }
-            // Measure wrapped children at the group's available width, rather
-            // than the unbounded width used by GroupBox's default autosizing.
-            preferred.Height = DisplayRectangle.Top + height + Padding.Bottom;
-            return preferred;
+            // Measure wrapped children once at the available width. The base
+            // implementation would first measure the same subtree unbounded.
+            return new Size(preferredWidth + Padding.Horizontal,
+                DisplayRectangle.Top + height + Padding.Bottom);
         }
     }
 
     internal sealed class SettingsFlowPanel : FlowLayoutPanel
     {
+        private readonly Dictionary<Size, Size> preferredSizes = new Dictionary<Size, Size>();
+
+        protected override void OnLayout(LayoutEventArgs e)
+        {
+            preferredSizes.Clear();
+            base.OnLayout(e);
+        }
+
+        protected override void OnFontChanged(EventArgs e)
+        {
+            preferredSizes.Clear();
+            base.OnFontChanged(e);
+        }
+
+        protected override void OnVisibleChanged(EventArgs e)
+        {
+            preferredSizes.Clear();
+            base.OnVisibleChanged(e);
+        }
+
         public override Size GetPreferredSize(Size proposedSize)
         {
-            Size preferred = base.GetPreferredSize(proposedSize);
+            Size preferred;
+            // Nested AutoSize tables request the same measurements repeatedly.
+            // Reuse them until layout, font or visibility changes invalidate them.
+            if (preferredSizes.TryGetValue(proposedSize, out preferred)) return preferred;
+            preferred = base.GetPreferredSize(proposedSize);
             // Native edit controls can round their actual height above the
             // preferred height during a DPI/font change. Reserve that difference.
             int rowHeight = 0;
@@ -998,6 +1045,7 @@ namespace CodexRateMonitorNative
                     rowHeight = Math.Max(rowHeight, control.Height + control.Margin.Vertical);
             }
             preferred.Height = Math.Max(preferred.Height, Padding.Vertical + rowHeight);
+            preferredSizes[proposedSize] = preferred;
             return preferred;
         }
     }
