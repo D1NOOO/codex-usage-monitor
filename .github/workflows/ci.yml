@@ -30,6 +30,7 @@ jobs:
           ./scripts/test-scale-migration.ps1
           ./scripts/test-usage-panels.ps1
           ./scripts/test-window-attachment.ps1
+          ./scripts/test-fullscreen-overlay.ps1
           ./scripts/test-overlay-dpi.ps1
 
       - name: Upload build artifact

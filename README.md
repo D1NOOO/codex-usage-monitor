@@ -14,6 +14,7 @@ A lightweight Windows tray app for Codex quota, reset times and reset credits, w
 
 - **Usage at a glance**: 5-hour and 7-day quotas, remaining or used percentages, and Auto / Show all / Weekly usage only panels.
 - **Flexible overlays**: Draggable, always-on-top desktop mode or click-through window attachment; single-row and multi-row layouts.
+- **Automatic fullscreen adaptation**: The desktop overlay hides during fullscreen on the same monitor and returns to its position afterward. Normal maximized windows stay unaffected, and usage monitoring continues in the background.
 - **Reset credits**: Available count and earliest expiry, queried read-only. Credits are never redeemed.
 - **Everyday convenience**: Live appearance preview, three UI languages, start with Windows and verified in-place updates.
 

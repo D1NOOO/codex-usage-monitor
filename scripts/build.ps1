@@ -74,6 +74,7 @@ namespace CodexRateMonitorNative
 
 $sources = @(
     (Join-Path $repoRoot 'src\CodexRateMonitor.cs'),
+    (Join-Path $repoRoot 'src\FullscreenDetector.cs'),
     (Join-Path $repoRoot 'src\AppearanceSettingsForm.cs'),
     (Join-Path $repoRoot 'src\DpiAwareDialog.cs'),
     (Join-Path $repoRoot 'src\OverlayRenderer.cs'),

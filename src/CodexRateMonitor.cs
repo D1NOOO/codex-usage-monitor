@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -1156,6 +1156,8 @@ namespace CodexRateMonitorNative
         private bool applyingDpi;
         private bool presentingSurface;
         private bool creatingSurfaceHandle;
+        private readonly FullscreenVisibility fullscreenVisibility = new FullscreenVisibility();
+        private bool desktopLocationInitialized;
 
         public int OverlayDpi { get { return overlayDpi; } }
 
@@ -1231,12 +1233,14 @@ namespace CodexRateMonitorNative
             if (modeChanged)
             {
                 dragging = false;
+                fullscreenVisibility.Reset();
+                desktopLocationInitialized = false;
                 RecreateHandle();
             }
 
             UpdateOverlayLayout();
 
-            if (overlayMode == "desktop" && Visible)
+            if (overlayMode == "desktop" && IsHandleCreated && NativeMethods.IsWindowVisible(Handle))
                 ShowDesktop();
             RefreshSurface();
         }
@@ -1265,7 +1269,7 @@ namespace CodexRateMonitorNative
                 else
                     Size = pixels;
             }
-            if (Visible && overlayMode == "desktop")
+            if (desktopLocationInitialized && overlayMode == "desktop")
                 Location = ClampLocationToScreen(Location);
         }
 
@@ -1426,7 +1430,18 @@ namespace CodexRateMonitorNative
         {
             if (overlayMode != "desktop")
                 return;
-            if (!Visible)
+            PrepareDesktopLocation();
+            fullscreenVisibility.Observe(FullscreenDetector.IsFullscreenOnMonitor(Handle),
+                Stopwatch.GetTimestamp());
+            if (fullscreenVisibility.Suppressed)
+            {
+                // Hide natively too: ShowWindow/SetWindowPos can leave the
+                // managed Visible flag false while the HWND is still visible.
+                if (NativeMethods.IsWindowVisible(Handle))
+                    NativeMethods.ShowWindow(Handle, 0);
+                return;
+            }
+            if (!NativeMethods.IsWindowVisible(Handle))
                 ShowDesktop();
         }
 
@@ -1434,29 +1449,47 @@ namespace CodexRateMonitorNative
         {
             if (overlayMode != "desktop")
                 return;
-            // Only resolve/assign the location the first time the window is made
-            // visible. Once it is on screen (e.g. dragged to a custom spot), later
-            // calls — triggered by live preview, save, or style reload from the
-            // settings form — must only re-assert topmost, never reposition. This
-            // keeps a user-placed desktop window pinned where they left it.
-            if (!Visible)
+            PrepareDesktopLocation();
+            // Settings and tray mode changes also enter here. Check before
+            // showing so startup during fullscreen never flashes the overlay.
+            fullscreenVisibility.Observe(FullscreenDetector.IsFullscreenOnMonitor(Handle),
+                Stopwatch.GetTimestamp());
+            if (fullscreenVisibility.Suppressed)
             {
-                Location = ResolveDesktopLocation();
-                ApplyDpi(DisplayDpi.ForWindow(Handle), Location);
-                Location = ResolveDesktopLocation();
+                NativeMethods.ShowWindow(Handle, 0);
+                return;
             }
-            if (!Visible)
+            if (!NativeMethods.IsWindowVisible(Handle))
                 NativeMethods.ShowWindow(Handle, NativeMethods.SW_SHOWNOACTIVATE);
             BringToFront();
             RefreshSurface();
         }
 
-        // The desktop overlay is always topmost so it can cover the shell
+        private void PrepareDesktopLocation()
+        {
+            if (desktopLocationInitialized)
+            {
+                // Display removal/resolution changes may invalidate the old
+                // position while hidden; keep it whenever it still fits.
+                Location = ClampLocationToScreen(Location);
+                return;
+            }
+            // This flag is independent of visibility: hiding for fullscreen
+            // must not reset an unsaved/default location or move the overlay.
+            desktopLocationInitialized = true;
+            Location = ResolveDesktopLocation();
+            ApplyDpi(DisplayDpi.ForWindow(Handle), Location);
+            Location = ResolveDesktopLocation();
+        }
+
+        // The desktop overlay stays topmost while visible so it can cover the shell
         // taskbar (which is itself topmost). Re-asserted every 50ms by the
         // dedicated topmostTimer to stay locked above the taskbar at all times,
         // like desktop lyric overlays.
         private new void BringToFront()
         {
+            if (fullscreenVisibility.Suppressed)
+                return;
             NativeMethods.SetWindowPos(
                 Handle,
                 NativeMethods.HWND_TOPMOST,
@@ -1467,7 +1500,8 @@ namespace CodexRateMonitorNative
 
         public void ReassertTopmost()
         {
-            if (overlayMode != "desktop" || !Visible)
+            if (overlayMode != "desktop" || fullscreenVisibility.Suppressed ||
+                !IsHandleCreated || !NativeMethods.IsWindowVisible(Handle))
                 return;
             BringToFront();
         }
