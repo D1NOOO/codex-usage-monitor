@@ -251,6 +251,76 @@ internal static class UsagePanelsRegression
             }
         }
     }
+    private static void CreditProgress(string captures)
+    {
+        DateTime now = DateTime.Now;
+        DateTime?[] grants = { now.AddDays(-24), now.AddDays(-1), now, now.AddDays(-30), now.AddDays(-31), now.AddDays(1), null, now.AddDays(-1), now, now.AddDays(1), now.AddDays(-1), now.AddDays(-90), now.AddDays(-60), now.AddDays(-59), now.AddDays(-85), now.AddDays(-84), now.AddDays(-27), now.AddDays(-27) };
+        DateTime?[] expiries = { now.AddDays(6), now.AddDays(29), now.AddDays(30), now, now.AddDays(-1), now.AddDays(31), now.AddDays(6), null, now, now, now.AddDays(1), now.AddDays(10), now.AddDays(40), now.AddDays(41), now.AddDays(15), now.AddDays(16), now.AddDays(3), now.AddDays(3).AddMinutes(1) };
+        double[] usedFractions = { .8, 1d / 30d, 0, 1, 1, 0, 0, 0, 0, 0, .5, .9, .6, .59, .85, .84, .9, 27d / (30d + 1d / 1440d) };
+        string[] names = { "near-expiry", "new-credit", "just-granted", "at-expiry", "expired", "future-grant", "unknown-grant", "unknown-expiry", "zero-lifetime", "invalid-lifetime", "short-lifetime", "long-lifetime", "warning-threshold", "above-warning", "danger-threshold", "above-danger", "three-day-threshold", "above-three-days" };
+        string[] progressColors = { "Warning", "MutedText", "MutedText", "Danger", "Danger", "MutedText", "MutedText", "MutedText", "MutedText", "MutedText", "MutedText", "Danger", "Warning", "MutedText", "Danger", "Warning", "Danger", "Danger" };
+        foreach (string language in new string[] { "zh-CN", "zh-TW", "en" })
+        foreach (string lines in new string[] { "1", "2" })
+        foreach (int dpi in new int[] { 96, 192 })
+        for (int index = 0; index < names.Length; index++)
+        {
+            object settings = Settings(language, lines);
+            Set(settings, "ShowResetCredits", true);
+            // Render at integral physical scales so the test can count filled
+            // pixels along the production bar without antialiasing ambiguity.
+            object style = Get(settings, "Style"); Set(style, "Scale", 1d / .85d);
+            object credits = Activator.CreateInstance(assembly.GetType("CodexRateMonitorNative.ResetCreditsInfo", true), true);
+            Set(credits, "AvailableCount", 2); Set(credits, "EarliestGranted", grants[index]); Set(credits, "EarliestExpiry", expiries[index]);
+            Color track = ColorTranslator.FromHtml((string)Get(style, "Track"));
+            Color progress = ColorTranslator.FromHtml((string)Get(style, progressColors[index]));
+            Color card = ColorTranslator.FromHtml((string)Get(style, "CardBackground"));
+            bool validLifetime = grants[index].HasValue && expiries[index].HasValue && expiries[index].Value > grants[index].Value;
+            int trackX = lines == "1" ? 476 : 10;
+            int trackY = lines == "1" ? 31 : 99;
+            int trackWidth = lines == "1" ? 214 : 232;
+            float factor = dpi / 96f;
+            foreach (string mode in new string[] { "remaining", "used" })
+            {
+                Set(settings, "UsageDisplay", mode);
+                using (Bitmap bitmap = Render(settings, Snapshot(3, true), credits, dpi))
+                {
+                    int filled = 0, blended = 0;
+                    for (int x = 0; x < trackWidth; x++)
+                    {
+                        Color pixel = bitmap.GetPixel((int)((trackX + x + .5f) * factor), (int)((trackY + 1f) * factor));
+                        if (pixel.ToArgb() == progress.ToArgb()) filled++;
+                        else if (pixel.ToArgb() != track.ToArgb()) blended++;
+                    }
+                    double fraction = !validLifetime ? 0 : mode == "remaining" ? 1 - usedFractions[index] : usedFractions[index];
+                    Check(blended <= 2, "Wrong credit lifetime percentage color: " + names[index] + "," + mode + "; blended=" + blended);
+                    Check(Math.Abs(filled - fraction * trackWidth) <= 2, "Wrong credit lifetime direction or length: " + names[index] + "," + mode + "," + language + "," + lines + "," + dpi + "; filled=" + filled);
+                    Color background = bitmap.GetPixel((int)((trackX - 5f) * factor), (int)((trackY - 10f) * factor));
+                    bool urgent = expiries[index].HasValue && expiries[index].Value <= now.AddDays(3);
+                    Check((background.ToArgb() != card.ToArgb()) == urgent, "Credit card tint must depend only on the three-day expiry threshold: " + names[index] + "," + mode);
+                    if (language == "zh-CN" && dpi == 192 && (index == 0 || index == 10 || index == 11 || index == 16 || index == 17))
+                    {
+                        Color text = ColorTranslator.FromHtml((string)Get(style, "Text"));
+                        Color muted = ColorTranslator.FromHtml((string)Get(style, "MutedText"));
+                        Color warning = ColorTranslator.FromHtml((string)Get(style, "Warning"));
+                        Color danger = ColorTranslator.FromHtml((string)Get(style, "Danger"));
+                        int normalText = 0, mutedText = 0, alertText = 0;
+                        int cardTop = lines == "1" ? 5 : 81;
+                        for (int y = cardTop * 2; y < (trackY - 2) * 2; y++)
+                        for (int x = trackX * 2; x < (trackX + trackWidth) * 2; x++)
+                        {
+                            Color pixel = bitmap.GetPixel(x, y);
+                            if (pixel.ToArgb() == text.ToArgb()) normalText++;
+                            if (pixel.ToArgb() == muted.ToArgb()) mutedText++;
+                            if (pixel.ToArgb() == warning.ToArgb() || pixel.ToArgb() == danger.ToArgb()) alertText++;
+                        }
+                        Check(normalText > 0 && mutedText > 0 && alertText == 0, "Credit count and expiry must keep normal text colors: " + names[index] + "," + mode + "," + lines);
+                        if (!string.IsNullOrEmpty(captures))
+                            bitmap.Save(Path.Combine(captures, "credits-" + names[index] + "-" + mode + "-" + lines + ".png"));
+                    }
+                }
+            }
+        }
+    }
     private static void AttachmentAnchors()
     {
         object settings = Settings("en", "2");
@@ -295,7 +365,7 @@ internal static class UsagePanelsRegression
             overlayType = assembly.GetType("CodexRateMonitorNative.OverlayForm", true);
             string captures = args.Length > 1 ? args[1] : "";
             if (!string.IsNullOrEmpty(captures)) Directory.CreateDirectory(captures);
-            SettingsAndControls(); StateTransitions(); GeometryAndPreview(captures); AttachmentAnchors();
+            SettingsAndControls(); StateTransitions(); GeometryAndPreview(captures); CreditProgress(captures); AttachmentAnchors();
             Console.WriteLine("PASS " + checks + " usage-panel assertions: full/partial reads, errors, account changes, tray output, 3 languages, rows, credits, DPI/scale, previews and corner defaults/anchors.");
         }
         catch (Exception error)

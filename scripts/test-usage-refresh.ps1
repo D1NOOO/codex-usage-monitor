@@ -15,6 +15,7 @@ $testExe = Join-Path $testDirectory 'UsageRefreshTest.exe'
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -98,6 +99,8 @@ internal static class UsageRefreshTest
             RetryDeadlineTests(assembly);
             ProtocolTests(assembly);
             ContextTests(assembly);
+            CreditRefreshTests(assembly);
+            NativeTrayTests(assembly);
             DiagnosticTests(assembly);
             Console.WriteLine("Passed " + assertions + " usage refresh assertions.");
         } catch (Exception ex) {
@@ -317,6 +320,9 @@ internal static class UsageRefreshTest
         object settings=Activator.CreateInstance(settingsType,true);
         object olderSettings=Json.Deserialize("{\"RefreshSeconds\":60}",settingsType);
         Check((int)Get(olderSettings,"ForegroundRefreshSeconds")==30,"older settings inherit new foreground default");
+        Check((int)Get(settings,"ResetCreditsSeconds")==900 && (int)Get(olderSettings,"ResetCreditsSeconds")==900,"new settings and older files without a credit interval default to fifteen minutes");
+        object customCreditsSettings=Json.Deserialize("{\"ResetCreditsSeconds\":1800}",settingsType);
+        Check((int)Get(customCreditsSettings,"ResetCreditsSeconds")==1800,"an explicit existing credit interval is preserved");
         Check(!(bool)Get(settings,"DiagnosticsEnabled") && !(bool)Get(olderSettings,"DiagnosticsEnabled"),"new and older unspecified settings default diagnostics off");
         Set(olderSettings,"ForegroundRefreshSeconds",50);Set(olderSettings,"RefreshSeconds",45);Call(olderSettings,"Normalize");
         object settingsCopy=Call(olderSettings,"Clone");
@@ -359,15 +365,24 @@ internal static class UsageRefreshTest
             Field(context,"refreshFailed",true);Call(context,"UpdateTrayText");
             Check(beforeFailure.Equals(Field(context,"lastSnapshotAt")),"failure retains last successful timestamp");
             Type i18n=assembly.GetType("CodexRateMonitorNative.I18n",true);
+            object credits=Activator.CreateInstance(assembly.GetType("CodexRateMonitorNative.ResetCreditsInfo",true),true);
+            Set(credits,"AvailableCount",int.MaxValue);Set(credits,"EarliestExpiry",new DateTime(2030,12,31));
+            Field(context,"resetCredits",credits);
             foreach(string lang in new[]{"zh-CN","zh-TW","en"}) {
                 i18n.GetMethod("SetLanguage").Invoke(null,new object[]{lang});
+                Set(settings,"Language",lang);
                 Set(window,"UsedPercent",0d);Set(snapshot,"Secondary",window);Call(context,"UpdateTrayText");
                 string failed=(string)i18n.GetMethod("T").Invoke(null,new object[]{"RefreshFailedShort"});
-                Check(tray.Text.Length<=63 && tray.Text.Contains(failed) && tray.Text.Contains(((DateTime)Field(context,"lastSnapshotAt")).ToString("HH:mm:ss")),"timestamp and failure fit tray limit in "+lang);
+                Check(tray.Text.Length<=127 && tray.Text.Contains(failed) && tray.Text.Contains(((DateTime)Field(context,"lastSnapshotAt")).ToString("HH:mm:ss")),"timestamp and failure fit native tray limit in "+lang);
+                Check(tray.Text.Contains(int.MaxValue.ToString()) && tray.Text.Contains("12-31") &&
+                    tray.Text.Split('\n').Length==6 && !tray.Text.Contains(" · "),"quota rows, credits and expiry are complete on separate tray lines in "+lang);
                 Field(context,"lastSnapshotMonotonic",monotonic-180);Call(context,"UpdateTrayText");
                 string age=(string)i18n.GetMethod("F").Invoke(null,new object[]{"AgeMinutes",new object[]{"3"}});
                 string hint=((ToolTip)Field(overlay,"usageHint")).GetToolTip((Control)overlay);
-                Check(tray.Text.Length<=63 && tray.Text.Contains(failed) && tray.Text.Contains(age) && hint.Contains(age),"cached failure exposes age without losing tray state in "+lang);
+                Check(tray.Text.Length<=127 && tray.Text.Contains(failed) && tray.Text.Contains(age) && hint.Contains(age),"cached failure exposes age without losing tray state in "+lang);
+                Field(context,"lastSnapshotMonotonic",monotonic-10000d*86400);Call(context,"UpdateTrayText");
+                Check(tray.Text.Length<=127 && tray.Text.Contains("9999") && tray.Text.Contains("12-31"),"maximum cache age and credit count retain every tray field in "+lang);
+                Field(context,"lastSnapshotMonotonic",monotonic-180);
                 Field(context,"refreshFailed",false);
                 Field(context,"lastUsageState",Enum.Parse(assembly.GetType("CodexRateMonitorNative.DesktopUsageState",true),"Minimized"));
                 Call(context,"UpdateTrayText");
@@ -375,9 +390,21 @@ internal static class UsageRefreshTest
                 Check(!tray.Text.Contains(cached),"three-minute-old minimized data is within its expected cadence in "+lang);
                 Field(context,"lastUsageState",Enum.Parse(assembly.GetType("CodexRateMonitorNative.DesktopUsageState",true),"Foreground"));
                 Call(context,"UpdateTrayText");
-                Check(tray.Text.Length<=63 && tray.Text.Contains(cached) && tray.Text.Contains(age),"foreground data exceeding cadence gets a stale-age hint in "+lang);
+                Check(tray.Text.Length<=127 && tray.Text.Contains(cached) && tray.Text.Contains(age),"foreground data exceeding cadence gets a stale-age hint in "+lang);
                 Set(window,"UsedPercent",5d);Call(context,"OnSnapshotReceived",snapshot,0);
                 Check(!tray.Text.Contains(cached) && !(bool)Field(context,"refreshFailed"),"successful unchanged data clears stale state in "+lang);
+                Set(credits,"AvailableCount",0);Call(context,"UpdateTrayText");
+                Check(tray.Text.Contains((string)i18n.GetMethod("T").Invoke(null,new object[]{"TrayCreditsEmpty"})) && !tray.Text.Contains("12-31"),"zero credits show an explicit balance without an expiry in "+lang);
+                Field(context,"resetCredits",null);Call(context,"UpdateTrayText");
+                Check(tray.Text.Contains((string)i18n.GetMethod("T").Invoke(null,new object[]{"TrayCreditsUnavailable"})),"unknown credits are distinguished from zero in "+lang);
+                Set(settings,"ShowResetCredits",false);Call(context,"UpdateTrayText");
+                Check(!tray.Text.Contains((string)i18n.GetMethod("T").Invoke(null,new object[]{"TrayCreditsTitle"})),"disabled credits stay out of tray hint in "+lang);
+                Set(settings,"ShowResetCredits",true);Set(credits,"AvailableCount",int.MaxValue);Field(context,"resetCredits",credits);
+                Set(settings,"UsagePanels","weekly");Call(context,"UpdateTrayText");
+                Check(tray.Text.Split('\n').Length==4 && !tray.Text.Contains((string)i18n.GetMethod("T").Invoke(null,new object[]{"FiveHour"})),"weekly-only tray keeps one quota row in "+lang);
+                Set(settings,"UsagePanels","all");Set(settings,"UsageDisplay","used");Call(context,"UpdateTrayText");
+                Check(tray.Text.Contains((string)i18n.GetMethod("T").Invoke(null,new object[]{"Used"})) && tray.Text.Contains("5%"),"used mode retains its label and percentages in "+lang);
+                Set(settings,"UsageDisplay","remaining");
                 Field(context,"refreshFailed",true);
             }
             object obsoletePush=Activator.CreateInstance(snapshotType,true);Set(obsoletePush,"NotificationId",3);
@@ -395,6 +422,147 @@ internal static class UsageRefreshTest
             Set(account,"CanReadQuota",false);Set(account,"StatusKey","NotSignedIn");Call(context,"OnAccountObserved",account,0);
             Check((bool)Field(context,"authDead") && (double)Field(context,"authProbeNotBefore")>monotonic+299 && Field(context,"lastSnapshot")==null,"signed-out context clears display and enforces slow recovery probes");
         } finally { tray.Dispose();((IDisposable)overlay).Dispose();((IDisposable)client).Dispose(); }
+    }
+    private static Func<T> CreditFetcher<T>(Func<object> fetch) { return ()=>(T)fetch(); }
+    private static void PumpUntil(Func<bool> ready, string label) {
+        Stopwatch clock=Stopwatch.StartNew();
+        while(clock.ElapsedMilliseconds<5000) {
+            Application.DoEvents();
+            if(ready()) return;
+            Thread.Sleep(10);
+        }
+        throw new Exception("Timed out: "+label);
+    }
+    private static void CreditRefreshTests(Assembly assembly) {
+        Type contextType=assembly.GetType("CodexRateMonitorNative.MonitorContext",true);
+        Type creditsType=assembly.GetType("CodexRateMonitorNative.ResetCreditsInfo",true);
+        object context=FormatterServices.GetUninitializedObject(contextType);
+        object settings=Activator.CreateInstance(assembly.GetType("CodexRateMonitorNative.MonitorSettings",true),true);
+        object overlay=Activator.CreateInstance(assembly.GetType("CodexRateMonitorNative.OverlayForm",true),new[]{settings});
+        object client=Activator.CreateInstance(assembly.GetType("CodexRateMonitorNative.AppServerClient",true),true);
+        var tray=new NotifyIcon();var release=new ManualResetEvent(false);int fetches=0;
+        object response=Activator.CreateInstance(creditsType,true);Set(response,"AvailableCount",2);
+        try {
+            IntPtr handle=((Control)overlay).Handle;
+            Field(context,"overlay",overlay);Field(context,"settings",settings);Field(context,"trayIcon",tray);Field(context,"appServer",client);
+            Field(context,"refreshScheduler",Activator.CreateInstance(assembly.GetType("CodexRateMonitorNative.UsageRefreshScheduler",true),true));
+            Field(context,"snapshotStabilizer",Activator.CreateInstance(assembly.GetType("CodexRateMonitorNative.RateSnapshotStabilizer",true),true));
+            Field(context,"accountFingerprint","first");Field(context,"lastCreditsCheck",DateTime.Now);
+            Func<object> fetch=delegate { object captured=response;Interlocked.Increment(ref fetches);release.WaitOne();return captured; };
+            Field(context,"fetchResetCredits",typeof(UsageRefreshTest).GetMethod("CreditFetcher",BindingFlags.Static|BindingFlags.NonPublic).MakeGenericMethod(creditsType).Invoke(null,new object[]{fetch}));
+            object candidate=Activator.CreateInstance(assembly.GetType("CodexRateMonitorNative.CodexExecutable",true),new object[]{Application.ExecutablePath,"--fake-server"});
+            Call(client,"StartCandidate",candidate);Wait(()=>(bool)Get(client,"IsInitialized"),"credit fixture initialize",15000);
+            Call(context,"RefreshNow");Wait(()=>Volatile.Read(ref fetches)==1,"manual credit request");
+            Check((bool)Get(Field(context,"refreshScheduler"),"InFlight"),"manual refresh requests quota and fresh credits before the credit interval expires");
+            Call(context,"RefreshNow");Call(context,"RefreshNow");
+            Check(fetches==1 && (bool)Field(context,"creditsFetchInFlight"),"repeated manual refresh merges the pending credit lookup");
+            release.Set();PumpUntil(()=>!(bool)Field(context,"creditsFetchInFlight"),"first credits");
+            Check((int)Get(Field(context,"resetCredits"),"AvailableCount")==2 && object.ReferenceEquals(Field(overlay,"resetCredits"),response),"fresh credit balance reaches the overlay");
+            response=Activator.CreateInstance(creditsType,true);Set(response,"AvailableCount",0);
+            Call(context,"RefreshNow");PumpUntil(()=>!(bool)Field(context,"creditsFetchInFlight"),"spent credits");
+            Check(fetches==2 && (int)Get(Field(context,"resetCredits"),"AvailableCount")==0,"next manual refresh accepts a zero balance despite a recent successful lookup");
+            Set(settings,"ShowResetCredits",false);Call(context,"RefreshNow");
+            Check(fetches==2 && !(bool)Field(context,"creditsFetchInFlight"),"manual refresh respects disabled credit queries");
+            Set(settings,"ShowResetCredits",true);release.Reset();
+            Call(context,"RefreshNow");Wait(()=>Volatile.Read(ref fetches)==3,"old account credits");
+            Call(context,"OnAccountUpdated",Get(client,"Generation"));
+            release.Set();PumpUntil(()=>!(bool)Field(context,"creditsFetchInFlight"),"obsolete credits");
+            Check(Field(context,"resetCredits")==null && Field(overlay,"resetCredits")==null,"account switch discards an in-flight credit result");
+            Call(context,"RefreshNow");
+            Check(fetches==3 && (DateTime)Field(context,"lastCreditsCheck")==DateTime.MinValue,"manual credit refresh waits for an unconfirmed account");
+            Field(context,"accountFingerprint","second");Field(context,"authResyncAttempted",true);
+            Call(context,"FetchResetCredits");
+            Check(fetches==3 && !(bool)Field(context,"creditsFetchInFlight"),"credits wait for authentication recovery");
+            object snapshot=Activator.CreateInstance(assembly.GetType("CodexRateMonitorNative.RateSnapshot",true),true);
+            Set(snapshot,"ReplaceMissingWindows",true);Set(snapshot,"ReadRequestId",50);Field(context,"completedReadId",50);
+            Set(snapshot,"Primary",Activator.CreateInstance(assembly.GetType("CodexRateMonitorNative.WindowUsage",true),true));
+            Call(context,"OnSnapshotReceived",snapshot,Get(client,"Generation"));
+            Check(!(bool)Field(context,"authResyncAttempted") && (DateTime)Field(context,"lastCreditsCheck")==DateTime.MinValue,"successful auth recovery leaves the requested credit refresh due");
+            Call(context,"FetchResetCredits");PumpUntil(()=>!(bool)Field(context,"creditsFetchInFlight"),"recovered credits");
+            Check(fetches==4 && Field(context,"resetCredits")!=null,"deferred credit refresh runs after account recovery");
+
+            int generation=(int)Get(client,"Generation");
+            long reset=DateTimeOffset.UtcNow.AddHours(2).ToUnixTimeSeconds();
+            object baseline=CreditQuotaSnapshot(assembly,95d,93d,reset);
+            Call(context,"OnSnapshotReceived",baseline,generation);
+            Check(fetches==4,"normal quota consumption does not query credits");
+            Call(context,"OnSnapshotReceived",CreditQuotaSnapshot(assembly,94.6d,93d,reset+1),generation);
+            Check(fetches==4,"percentage noise and reset timestamp jitter do not query credits");
+            response=Activator.CreateInstance(creditsType,true);Set(response,"AvailableCount",3);
+            object fiveHourReset=CreditQuotaSnapshot(assembly,1d,93d,reset+600);
+            Call(context,"OnSnapshotReceived",fiveHourReset,generation);
+            Call(context,"OnSnapshotReceived",fiveHourReset,generation);
+            Check(fetches==4 && !(bool)Field(context,"creditsFetchInFlight"),"unconfirmed quota regression cannot start a credit query");
+            Call(context,"OnSnapshotReceived",fiveHourReset,generation);
+            PumpUntil(()=>Volatile.Read(ref fetches)==5 && !(bool)Field(context,"creditsFetchInFlight"),"five-hour reset credits");
+            Check((int)Get(Field(context,"resetCredits"),"AvailableCount")==3,"a confirmed five-hour-only reset refreshes credits immediately");
+            Call(context,"OnSnapshotReceived",fiveHourReset,generation);
+            Call(context,"OnSnapshotReceived",CreditQuotaSnapshot(assembly,2d,93d,reset+601),generation);
+            Check(fetches==5 && !(bool)Field(context,"creditsFetchInFlight"),"repeated reset readings, normal consumption and timestamp jitter do not repeat the credit query");
+            object weeklyReset=CreditQuotaSnapshot(assembly,2d,0d,reset+1200);
+            for(int i=0;i<3;i++)Call(context,"OnSnapshotReceived",weeklyReset,generation);
+            PumpUntil(()=>Volatile.Read(ref fetches)==6 && !(bool)Field(context,"creditsFetchInFlight"),"weekly reset credits");
+            Check(fetches==6,"a confirmed weekly-only reset also refreshes credits immediately");
+            Call(context,"OnSnapshotReceived",CreditQuotaSnapshot(assembly,40d,50d,reset+1200),generation);
+            object bothReset=CreditQuotaSnapshot(assembly,1d,1d,reset+1800);
+            for(int i=0;i<3;i++)Call(context,"OnSnapshotReceived",bothReset,generation);
+            PumpUntil(()=>Volatile.Read(ref fetches)==7 && !(bool)Field(context,"creditsFetchInFlight"),"combined reset credits");
+            Check(fetches==7,"simultaneous five-hour and weekly resets produce one credit query");
+
+            Call(context,"OnSnapshotReceived",CreditQuotaSnapshot(assembly,20d,30d,reset+1800),generation);
+            object oldCredits=Activator.CreateInstance(creditsType,true);Set(oldCredits,"AvailableCount",2);response=oldCredits;
+            release.Reset();Call(context,"FetchResetCredits");Wait(()=>Volatile.Read(ref fetches)==8,"pre-reset credits");
+            object nextReset=CreditQuotaSnapshot(assembly,0d,0d,reset+2400);
+            for(int i=0;i<3;i++)Call(context,"OnSnapshotReceived",nextReset,generation);
+            Call(context,"OnSnapshotReceived",nextReset,generation);
+            Check(fetches==8 && (bool)Field(context,"creditsRefreshPending"),"a quota reset merges a fresh follow-up behind an older pending credit query");
+            response=Activator.CreateInstance(creditsType,true);Set(response,"AvailableCount",1);
+            release.Set();PumpUntil(()=>Volatile.Read(ref fetches)==9 && !(bool)Field(context,"creditsFetchInFlight"),"post-reset follow-up credits");
+            Check((int)Get(Field(context,"resetCredits"),"AvailableCount")==1 && !(bool)Field(context,"creditsRefreshPending"),"the follow-up replaces the pre-reset balance without leaving another query queued");
+
+            Call(context,"OnSnapshotReceived",CreditQuotaSnapshot(assembly,30d,40d,reset-7*86400),generation);
+            Call(context,"OnSnapshotReceived",CreditQuotaSnapshot(assembly,0d,0d,reset+3000),generation);
+            PumpUntil(()=>Volatile.Read(ref fetches)==10 && !(bool)Field(context,"creditsFetchInFlight"),"natural reset credits");
+            Check(fetches==10,"an accepted natural quota reset can also trigger one credit refresh");
+            Set(settings,"ShowResetCredits",false);
+            Call(context,"OnSnapshotReceived",CreditQuotaSnapshot(assembly,30d,40d,reset+3000),generation);
+            object disabledReset=CreditQuotaSnapshot(assembly,1d,1d,reset+3600);
+            for(int i=0;i<3;i++)Call(context,"OnSnapshotReceived",disabledReset,generation);
+            Check(fetches==10 && !(bool)Field(context,"creditsRefreshPending"),"quota resets respect disabled credit queries");
+            Set(settings,"ShowResetCredits",true);release.Reset();Call(context,"FetchResetCredits");
+            Wait(()=>Volatile.Read(ref fetches)==11,"account change fixture credits");
+            Call(context,"OnSnapshotReceived",CreditQuotaSnapshot(assembly,20d,30d,reset+3600),generation);
+            object lastReset=CreditQuotaSnapshot(assembly,0d,0d,reset+4200);
+            for(int i=0;i<3;i++)Call(context,"OnSnapshotReceived",lastReset,generation);
+            Call(context,"OnAccountUpdated",generation);
+            release.Set();PumpUntil(()=>!(bool)Field(context,"creditsFetchInFlight"),"cleared account credit queue");
+            Check(fetches==11 && !(bool)Field(context,"creditsRefreshPending") && Field(context,"resetCredits")==null,"an account switch clears the queued reset-credit refresh and discards its old result");
+        } finally {
+            release.Set();PumpUntil(()=>!(bool)Field(context,"creditsFetchInFlight"),"credit fixture cleanup");
+            release.Dispose();tray.Dispose();((IDisposable)overlay).Dispose();((IDisposable)client).Dispose();
+        }
+    }
+    private static object CreditQuotaSnapshot(Assembly assembly,double primary,double secondary,long reset) {
+        object snapshot=Activator.CreateInstance(assembly.GetType("CodexRateMonitorNative.RateSnapshot",true),true);
+        object first=Activator.CreateInstance(assembly.GetType("CodexRateMonitorNative.WindowUsage",true),true);
+        object second=Activator.CreateInstance(first.GetType(),true);
+        Set(first,"UsedPercent",primary);Set(first,"ResetsAt",reset);Set(first,"WindowDurationMins",(long)300);
+        Set(second,"UsedPercent",secondary);Set(second,"ResetsAt",reset+6*86400);Set(second,"WindowDurationMins",(long)10080);
+        Set(snapshot,"Primary",first);Set(snapshot,"Secondary",second);Set(snapshot,"NotificationId",100);
+        return snapshot;
+    }
+    private static void NativeTrayTests(Assembly assembly) {
+        MethodInfo setText=assembly.GetType("CodexRateMonitorNative.TrayToolTip",true).GetMethod("SetText");
+        using(var tray=new NotifyIcon()) {
+            tray.Icon=SystemIcons.Application;tray.Visible=true;
+            string text="Codex remaining:\n5h 89%\n7d 98%\nUpdated 13:39:29\nReset credits: 2 left, exp 11-01";
+            setText.Invoke(null,new object[]{tray,text});
+            Check(tray.Text==text,"visible native tray accepts the full multiline credit hint beyond 63 characters");
+            tray.Icon=SystemIcons.Information;tray.Visible=false;tray.Visible=true;
+            Check(tray.Text==text,"icon replacement and re-registration retain the complete native hint");
+            tray.Text="Connecting";setText.Invoke(null,new object[]{tray,text});
+            Check(tray.Text==text,"full usage hint returns after a short transient status");
+        }
     }
     private static void DiagnosticTests(Assembly assembly) {
         string history=string.Join("\n",Directory.GetFiles(logDirectory,"usage-*.log").Select(File.ReadAllText));
@@ -485,7 +653,7 @@ $csc = @(
     (Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe')
 ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 if (-not $csc) { throw '.NET Framework C# compiler was not found.' }
-& $csc /nologo /target:exe /out:"$testExe" /reference:System.Windows.Forms.dll /reference:System.Web.Extensions.dll $testSource (Join-Path $repoRoot 'src\UsageRefreshScheduler.cs')
+& $csc /nologo /target:exe /out:"$testExe" /reference:System.Drawing.dll /reference:System.Windows.Forms.dll /reference:System.Web.Extensions.dll $testSource (Join-Path $repoRoot 'src\UsageRefreshScheduler.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Usage refresh test compilation failed.' }
 & $testExe $monitorExe
 if ($LASTEXITCODE -ne 0) { throw 'Usage refresh test failed.' }

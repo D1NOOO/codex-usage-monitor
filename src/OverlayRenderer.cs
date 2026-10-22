@@ -76,6 +76,16 @@ namespace CodexRateMonitorNative
 
         public static string FormatSummary(MonitorSettings settings, RateSnapshot snapshot)
         {
+            return FormatUsage(settings, snapshot, " · ");
+        }
+
+        public static string FormatLines(MonitorSettings settings, RateSnapshot snapshot)
+        {
+            return FormatUsage(settings, snapshot, "\n");
+        }
+
+        private static string FormatUsage(MonitorSettings settings, RateSnapshot snapshot, string separator)
+        {
             int visible = GetVisibleWindows(settings, snapshot);
             var parts = new List<string>();
             for (int index = 0; index < 2; index++)
@@ -86,7 +96,7 @@ namespace CodexRateMonitorNative
                     UsageDisplayTools.GetDisplayedPercent(usage.UsedPercent, settings.UsageDisplay));
                 parts.Add(I18n.Translate(index == 0 ? "FiveHour" : "SevenDay", settings.Language) + " " + percent);
             }
-            return string.Join(" · ", parts.ToArray());
+            return string.Join(separator, parts.ToArray());
         }
     }
 
@@ -322,9 +332,9 @@ namespace CodexRateMonitorNative
 
         // Third card: rate-limit reset credits (READ-ONLY display; the app
         // never redeems credits). Shows the available count, the earliest
-        // expiry among available credits, and a thin bar with the elapsed
-        // fraction of that credit's 30-day lifetime. The bar/deadline color
-        // escalates: normal muted -> warning within 7 days -> danger within 3.
+        // expiry among available credits, and a thin lifetime bar that follows
+        // the selected remaining/used display mode and percentage colors.
+        // Text keeps its normal palette; expiry within 3 days tints the card.
         private void DrawCreditsCard(
             Graphics g,
             RectangleF bounds,
@@ -339,17 +349,10 @@ namespace CodexRateMonitorNative
 
             float cardRadius = Math.Max(0, (float)settings.Style.CornerRadius - 3f);
 
-            // Deadline escalation: >7 days keeps the calm card, <=7 days turns
-            // the texts amber, <=3 days additionally tints the card background
-            // red -- an expiring reset is paid-for capacity about to vanish.
+            // Card urgency uses absolute time independently of the lifetime bar.
             double daysLeft = info.EarliestExpiry.HasValue
                 ? (info.EarliestExpiry.Value - DateTime.Now).TotalDays
                 : 99d;
-            Color deadline = daysLeft <= 3d
-                ? ColorTools.Parse(settings.Style.Danger)
-                : (daysLeft <= 7d
-                    ? ColorTools.Parse(settings.Style.Warning)
-                    : muted);
             Color cardFill = card;
             if (daysLeft <= 3d)
             {
@@ -386,20 +389,27 @@ namespace CodexRateMonitorNative
             using (family)
             using (var mainFont = new Font(family, mainFontSize, FontStyle.Bold, GraphicsUnit.Pixel))
             using (var smallFont = new Font(family, resetFontSize, FontStyle.Regular, GraphicsUnit.Pixel))
-            using (var textBrush = new SolidBrush(daysLeft <= 7d ? deadline : text))
-            using (var deadlineBrush = new SolidBrush(deadline))
+            using (var textBrush = new SolidBrush(text))
+            using (var expiryBrush = new SolidBrush(muted))
             {
                 DrawingHelpers.DrawCreditsText(
-                    g, bounds, count, expiry, mainFont, smallFont, textBrush, deadlineBrush);
+                    g, bounds, count, expiry, mainFont, smallFont, textBrush, expiryBrush);
             }
 
             RectangleF trackRect = new RectangleF(bounds.X + 7, bounds.Bottom - 4, bounds.Width - 14, 2);
             using (var trackBrush = new SolidBrush(track))
                 g.FillRectangle(trackBrush, trackRect);
-            double fraction = info.ElapsedFraction();
+            bool knownLifetime = info.EarliestGranted.HasValue && info.EarliestExpiry.HasValue &&
+                info.EarliestExpiry.Value > info.EarliestGranted.Value;
+            double fraction = knownLifetime
+                ? UsageDisplayTools.GetDisplayedPercent(info.ElapsedFraction() * 100d, settings.UsageDisplay) / 100d
+                : 0d;
             if (fraction > 0d)
             {
-                using (var progressBrush = new SolidBrush(deadline))
+                Color progress = UsageDisplayTools.GetProgressColor(
+                    fraction * 100d, settings.UsageDisplay, muted,
+                    ColorTools.Parse(settings.Style.Warning), ColorTools.Parse(settings.Style.Danger));
+                using (var progressBrush = new SolidBrush(progress))
                     g.FillRectangle(progressBrush,
                         new RectangleF(
                             trackRect.X,

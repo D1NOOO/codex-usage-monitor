@@ -71,6 +71,8 @@ namespace CodexRateMonitorNative
         private ResetCreditsInfo resetCredits;
         private DateTime lastCreditsCheck = DateTime.MinValue;
         private bool creditsFetchInFlight;
+        private bool creditsRefreshPending;
+        private readonly Func<ResetCreditsInfo> fetchResetCredits = ResetCreditsClient.Fetch;
         private System.Windows.Forms.Timer trayTextRestoreTimer;
         private DateTime lastSnapshotAt = DateTime.MinValue;
         private double lastSnapshotMonotonic;
@@ -344,9 +346,13 @@ namespace CodexRateMonitorNative
 
         private void RefreshNow()
         {
+            // Keep this due through sign-in recovery, but merge an existing lookup.
+            if (!creditsFetchInFlight)
+                lastCreditsCheck = DateTime.MinValue;
             if (authFailures == 0 && !authDead)
             {
                 RequestRateLimits(true);
+                FetchResetCredits();
                 return;
             }
 
@@ -463,6 +469,7 @@ namespace CodexRateMonitorNative
             refreshScheduler.ClearResetTargets();
             resetCredits = null;
             lastCreditsCheck = DateTime.MinValue;
+            creditsRefreshPending = false;
             identicalReads = 0;
             completedReadId = 0;
             snapshotStabilizer.Reset();
@@ -605,6 +612,7 @@ namespace CodexRateMonitorNative
                     authDead = false;
                     authAttemptAt = DateTime.MinValue;
                 }
+                bool quotaReset = RateSnapshotStabilizer.HasUsageDecrease(lastSnapshot, snapshot);
                 overlay.SetSnapshot(snapshot);
                 DiagnosticLog.Write(
                     "snapshot-displayed",
@@ -626,6 +634,15 @@ namespace CodexRateMonitorNative
                     snapshot.Secondary == null ? (double?)null : snapshot.Secondary.UsedPercent);
                 refreshFailed = false;
                 UpdateTrayText();
+                if (quotaReset && settings.ShowResetCredits)
+                {
+                    // Compare accepted readings, so repeated notifications and
+                    // timestamp jitter do not trigger another credit lookup.
+                    creditsRefreshPending = true;
+                    lastCreditsCheck = DateTime.MinValue;
+                    DiagnosticLog.Write("reset-credits-refresh-trigger", "reason=quota-reset");
+                    FetchResetCredits();
+                }
             });
         }
 
@@ -645,8 +662,8 @@ namespace CodexRateMonitorNative
             return I18n.F(key, Math.Min(9999, Math.Floor(seconds / divisor)).ToString(CultureInfo.InvariantCulture));
         }
 
-        // Keep update time within the tray's 63-character limit. The overlay
-        // tooltip can additionally show full credit details and failure state.
+        // Both hints show one quota per line, update time and credit details.
+        // The native tray allows 127 characters; only its failure wording is shorter.
         private void UpdateTrayText()
         {
             if (authFailures > 0 || authResyncAttempted || authDead)
@@ -658,7 +675,7 @@ namespace CodexRateMonitorNative
                 I18n.T(UsageDisplayTools.IsRemaining(settings.UsageDisplay)
                     ? "Remaining"
                     : "Used"));
-            string summary = UsagePanelTools.FormatSummary(settings, lastSnapshot);
+            string summary = UsagePanelTools.FormatLines(settings, lastSnapshot);
             text += "\n" + summary;
             string updated = I18n.F("UpdatedAt", lastSnapshotAt.ToString("HH:mm:ss"));
             double cacheAge = Math.Max(0, NowSeconds - lastSnapshotMonotonic);
@@ -666,28 +683,25 @@ namespace CodexRateMonitorNative
                 settings.ForegroundRefreshSeconds, settings.RefreshSeconds, settings.MinimizedRefreshSeconds);
             bool stale = cacheAge > Math.Max(120, interval * 2 + 30);
             string hint = text + "\n" + updated;
+            string trayText = hint;
             if (refreshFailed) hint += "\n" + I18n.T("RefreshFailedCached");
             else if (stale) hint += "\n" + I18n.T("CachedDataStale");
             if (refreshFailed || stale) hint += "\n" + I18n.F("LastConfirmedAgo", FormatCacheAge(cacheAge));
-            if (resetCredits != null && resetCredits.AvailableCount > 0)
+            if (settings.ShowResetCredits)
             {
-                hint += "\n" + I18n.T("TrayCreditsTitle");
-                hint += "\n" + string.Format(CultureInfo.InvariantCulture,
-                    I18n.T("TrayCreditsDetail"),
-                    resetCredits.AvailableCount.ToString(CultureInfo.InvariantCulture),
-                    resetCredits.FormatEarliestExpiry());
+                string credits = I18n.T("TrayCreditsTitle") + " " +
+                    (resetCredits == null ? I18n.T("TrayCreditsUnavailable") :
+                    resetCredits.AvailableCount == 0 ? I18n.T("TrayCreditsEmpty") :
+                    I18n.F("TrayCreditsDetail", resetCredits.AvailableCount.ToString(CultureInfo.InvariantCulture),
+                        resetCredits.FormatEarliestExpiry()));
+                hint += "\n" + credits;
+                trayText += "\n" + credits;
             }
             overlay.SetUsageHint(hint);
-            // The compact form works in all three languages without truncating
-            // the update time. Failure remains visible even in attach mode.
-            string compact = I18n.F("UsageTraySummary",
-                I18n.T(UsageDisplayTools.IsRemaining(settings.UsageDisplay) ? "Remaining" : "Used"),
-                summary);
             if (refreshFailed || stale)
-                compact += "\n" + lastSnapshotAt.ToString("HH:mm:ss") + " " +
+                trayText += "\n" +
                     I18n.T(refreshFailed ? "RefreshFailedShort" : "CachedShort") + " " + FormatCacheAge(cacheAge);
-            else compact += "\n" + updated;
-            trayIcon.Text = SafeTrayText(compact);
+            TrayToolTip.SetText(trayIcon, trayText);
         }
 
         // Read-only reset-credit refresh. Runs off the UI thread; the result is
@@ -695,19 +709,29 @@ namespace CodexRateMonitorNative
         // stale) because the ChatGPT backend is an auxiliary data source.
         private void FetchResetCredits()
         {
-            if (!settings.ShowResetCredits || creditsFetchInFlight || authDead || accountFingerprint == null)
+            if (!settings.ShowResetCredits || creditsFetchInFlight || authDead ||
+                authFailures > 0 || authResyncAttempted || accountFingerprint == null)
                 return;
             creditsFetchInFlight = true;
+            creditsRefreshPending = false;
             int startedEpoch = accountEpoch;
             lastCreditsCheck = DateTime.Now;
             ThreadPool.QueueUserWorkItem(delegate
             {
-                ResetCreditsInfo info = ResetCreditsClient.Fetch();
+                ResetCreditsInfo info = fetchResetCredits();
                 Ui(delegate
                 {
                     creditsFetchInFlight = false;
                     if (startedEpoch != accountEpoch)
                         return;
+                    if (creditsRefreshPending)
+                    {
+                        // This request predates a confirmed quota reset. Fetch
+                        // once more before displaying a potentially old balance.
+                        lastCreditsCheck = DateTime.MinValue;
+                        FetchResetCredits();
+                        return;
+                    }
                     resetCredits = info;
                     // On failure retry soon (60s) instead of waiting a full
                     // cycle; the backend is auxiliary so this stays quiet.
@@ -967,9 +991,9 @@ namespace CodexRateMonitorNative
         {
             if (value.Length <= 63)
                 return value;
-            // Windows tray tooltips hold at most 63 chars. Cut at the last
-            // line break so a sentence is never chopped mid-word (which used
-            // to render as garbage like "earlies"); otherwise trim hard.
+            // Framework's public setter limits these short notices to 63 chars.
+            // Cut at the last line break to avoid chopping a sentence mid-word;
+            // the longer usage hint is handled separately by TrayToolTip.
             string cut = value.Substring(0, 63);
             int nl = cut.LastIndexOf('\n');
             if (nl > 0)
@@ -1137,6 +1161,32 @@ namespace CodexRateMonitorNative
             appServer.Dispose();
             overlay.Close();
             overlay.Dispose();
+        }
+    }
+
+    internal static class TrayToolTip
+    {
+        // .NET Framework's setter still enforces 63 characters, but its native
+        // NOTIFYICONDATA buffer holds 128 (including NUL). Retain the full text
+        // in the component so icon changes and Explorer restarts preserve it.
+        private static readonly System.Reflection.FieldInfo TextField = typeof(NotifyIcon).GetField(
+            "text", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        private static readonly System.Reflection.MethodInfo UpdateIcon = typeof(NotifyIcon).GetMethod(
+            "UpdateIcon", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
+        public static void SetText(NotifyIcon icon, string text)
+        {
+            if (text.Length > 127)
+                throw new ArgumentOutOfRangeException("text", "Tray tooltip exceeds the native 127-character limit.");
+            if (icon.Text == text) return;
+            if (text.Length <= 63 || TextField == null || UpdateIcon == null)
+            {
+                icon.Text = text;
+                return;
+            }
+            TextField.SetValue(icon, text);
+            if (icon.Visible)
+                UpdateIcon.Invoke(icon, new object[] { true });
         }
     }
 
@@ -2929,7 +2979,7 @@ namespace CodexRateMonitorNative
             Style = new StyleSettings();
             OverlayMode = "desktop";
             ShowResetCredits = true;
-            ResetCreditsSeconds = 1800;
+            ResetCreditsSeconds = 900;
             MinimizedRefreshSeconds = 300;
         }
 
@@ -3417,6 +3467,19 @@ namespace CodexRateMonitorNative
             accepted = null;
             pending = null;
             pendingConfirmations = 0;
+        }
+
+        public static bool HasUsageDecrease(RateSnapshot previous, RateSnapshot current)
+        {
+            return previous != null && current != null &&
+                (WindowUsageDecreased(previous.Primary, current.Primary) ||
+                 WindowUsageDecreased(previous.Secondary, current.Secondary));
+        }
+
+        private static bool WindowUsageDecreased(WindowUsage previous, WindowUsage current)
+        {
+            return previous != null && current != null &&
+                current.UsedPercent + PercentTolerance < previous.UsedPercent;
         }
 
         public bool TryAccept(

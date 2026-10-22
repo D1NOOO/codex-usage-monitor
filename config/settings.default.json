@@ -11,7 +11,7 @@
   "ForegroundRefreshSeconds": 30,
   "MinimizedRefreshSeconds": 300,
   "ShowResetCredits": true,
-  "ResetCreditsSeconds": 1800,
+  "ResetCreditsSeconds": 900,
   "DiagnosticsEnabled": false,
   "DiagnosticRetentionDays": 7,
   "Style": {

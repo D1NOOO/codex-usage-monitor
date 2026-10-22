@@ -46,11 +46,11 @@ Multiple rows:
 
 ![Multi-row overlay](docs/overlay-multirow-credits-zh-cn.png)
 
-Credit expiry turns warning-colored within 7 days and danger-colored within 3 days. The credit card hides when no credits are available.
+The reset-credit bar follows the Remaining / Used setting, showing the remaining / elapsed lifetime of the earliest-expiring credit. Its color reflects remaining lifetime: warning at 40% or less, danger at 15% or less. Text keeps its normal colors, and the card background changes within 3 days of expiry. The credit card hides when no credits are available.
 
 ### Tray summary
 
-Hover over the tray icon for usage, update time and credit details.
+Hover over the tray icon to see each quota, update time, reset-credit count and earliest expiry on separate lines.
 
 ![Tray summary](docs/tray-tooltip-zh-cn.png)
 
@@ -61,7 +61,7 @@ Hover over the tray icon for usage, update time and credit details.
 | Foreground | 30 seconds |
 | Visible in background | 60 seconds |
 | Minimized, hidden or not running | 300 seconds |
-| Reset-credit query | 30 minutes |
+| Reset-credit query | 15 minutes; refreshed immediately after a confirmed quota reset |
 
 The monitor reuses one app-server connection and supplements polling with quota notifications. Returning to the foreground, restoring the window or waking Windows schedules a refresh. Failed reads retain cached data and retry with backoff; invalid login clears old quotas.
 
@@ -82,10 +82,11 @@ Most options are available in appearance settings. See the [default settings](ht
 | `ForegroundRefreshSeconds` | 30 to `RefreshSeconds` seconds; default 30 |
 | `RefreshSeconds` | 30–900 seconds; default 60 |
 | `MinimizedRefreshSeconds` | 60–3600 seconds; default 300 |
-| `ResetCreditsSeconds` | 300–86400 seconds; default 1800 |
+| `ResetCreditsSeconds` | 300–86400 seconds; default 900 |
 | `DiagnosticsEnabled` | `false` by default |
 
 Overlay scale is 50%–200%, applied in addition to Windows display scaling. Updates preserve `settings.json`; older scale settings are converted once to retain the same displayed size.
+An explicitly configured reset-credit interval is preserved. Change `ResetCreditsSeconds: 1800` to `900` to use the new 15-minute interval with an existing settings file.
 
 ## Data and privacy
 
@@ -99,6 +100,8 @@ Diagnostics are off by default. When enabled, redacted logs in `%LOCALAPPDATA%\C
 |---|---|
 | Codex executable not found | Open or update ChatGPT desktop, or check the CLI installation with `codex --version`. |
 | No quota data / login expired | Sign in with a ChatGPT account, then choose **Refresh now** from the tray menu. |
+| I reset my quota manually, but the reset-credit count did not change | The count refreshes immediately after a quota reset is detected and confirmed. Regular queries default to every 15 minutes; you can also right-click the tray icon and choose **Refresh now**. |
+| How can I simulate a reset credit expiring within 3 days? | Run the [expiry simulation](docs/usage-refresh.md#重置券显示与到期模拟) to generate previews and verify the bar and background colors using simulated data. |
 | Overlay missing or misplaced | Confirm the monitor is running and the attached app window is visible; adjust placement in appearance settings. |
 
 If the problem persists, [open an issue](https://github.com/D1NOOO/codex-usage-monitor/issues) with a screenshot that excludes private information.
